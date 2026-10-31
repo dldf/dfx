@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan a URL subtree, confirm PDF downloads, and track human review in a text tree."""
+"""Scan a URL subtree, confirm PDF downloads, and show folder-based review status."""
 import argparse
 from collections import deque
 from datetime import datetime, timezone
@@ -17,13 +17,12 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from urllib.robotparser import RobotFileParser
 
 from bs4 import BeautifulSoup
+from workflow import DOWNLOADS, PENDING, READY, document_present
 
 ROOT = Path(__file__).resolve().parent
 INVENTORY = ROOT / 'inventory.json'
 AGENT = 'pdf2md/1.0'
-STAGES = {'U': 'Unreviewed', 'R': 'In review',
-          'C': 'Converted and reviewed; pending publication',
-          'A': 'Accessible at published URL; human verified'}
+STAGES = {'1': 'Downloaded', '2': 'Pending Review', '3': 'Ready to Publish'}
 
 
 def now():
@@ -145,7 +144,7 @@ def scan(data, scope, limit):
                 pdf = (mime == 'application/pdf' or urlsplit(final).path.lower().endswith('.pdf')
                        or '.pdf' in response.headers.get('Content-Disposition', '').lower())
                 if pdf:
-                    entry = data['documents'].setdefault(final, {'status': 'U', 'discovered_at': stamp})
+                    entry = data['documents'].setdefault(final, {'discovered_at': stamp})
                     length = response.headers.get('Content-Length', '')
                     entry.update({'last_seen': stamp, 'size_bytes': int(length) if length.isdigit() else None})
                     found.add(final)
@@ -179,7 +178,7 @@ def scan(data, scope, limit):
     save(data)
     print(f'Found {len(found)} unique PDFs; {len(errors)} skipped URLs; {len(outside)} PDF links outside scope.')
     if queue:
-        print(f'Scan limit reached ({limit} URLs). Increase --max-pages to continue discovery.')
+        print(f'Scan limit reached ({limit} URLs). Increase --max-urls to continue discovery.')
     print('Scope: linked content only; unlinked files and JavaScript-generated links may be missed.')
 
 
@@ -189,8 +188,7 @@ def documents(data, scope):
 
 def tree(data, scope):
     entries = documents(data, scope)
-    accessible = sum(entry['status'] == 'A' for _, entry in entries)
-    print(f'{scope}    {accessible} of {len(entries)} accessible')
+    print(f'{scope}    {len(entries)} PDFs')
     nodes = {}
     for url, entry in entries:
         parts = urlsplit(url)
@@ -200,7 +198,8 @@ def tree(data, scope):
         branch = nodes
         for segment in segments[:-1]:
             branch = branch.setdefault(segment + '/', {})
-        branch[f'[{entry["status"]}] {label}'] = None
+        stage = document_stage(url)
+        branch[f'[{stage}] {label}' if stage else f'{label} — not downloaded'] = None
 
     def display(branch, prefix=''):
         items = sorted(branch.items())
@@ -226,35 +225,37 @@ def local_path(url):
         name = Path(components[-1])
         components[-1] = name.stem + '-' + hashlib.sha256(parts.query.encode()).hexdigest()[:10] + '.pdf'
     host = re.sub(r'[^\w.\-]', '_', parts.netloc)
-    destination = (ROOT / 'input' / host).joinpath(*components).resolve()
-    boundary = (ROOT / 'input').resolve()
+    destination = (ROOT / DOWNLOADS / host).joinpath(*components).resolve()
+    boundary = (ROOT / DOWNLOADS).resolve()
     if not boundary.is_relative_to(ROOT.resolve()) or not destination.is_relative_to(boundary):
-        raise ValueError('Download path escapes input/.')
+        raise ValueError(f'Download path escapes {DOWNLOADS}/.')
     return destination
 
 
-def downloaded(entry):
-    relative = entry.get('local_path')
-    if not relative:
-        return False
-    path = (ROOT / relative).resolve()
-    boundary = (ROOT / 'input').resolve()
-    if not boundary.is_relative_to(ROOT.resolve()) or not path.is_relative_to(boundary):
-        raise ValueError('Inventory download path escapes input/.')
-    return path.is_file()
+def document_stage(url):
+    pdf = local_path(url)
+    relative = pdf.relative_to((ROOT / DOWNLOADS).resolve()).with_suffix('')
+    for stage, name in (('3', READY), ('2', PENDING)):
+        boundary = (ROOT / name).resolve()
+        folder = (boundary / relative).resolve()
+        if not boundary.is_relative_to(ROOT.resolve()) or not folder.is_relative_to(boundary):
+            raise ValueError(f'Document path escapes {name}/.')
+        if document_present(folder):
+            return stage
+    return '1' if pdf.is_file() else None
 
 
 def download(data, scope):
     pending = [(url, entry) for url, entry in documents(data, scope)
-               if entry['status'] != 'A' and not downloaded(entry)]
+               if document_stage(url) is None]
     known = sum(entry['size_bytes'] for _, entry in pending if entry.get('size_bytes') is not None)
     unknown = sum(entry.get('size_bytes') is None for _, entry in pending)
     print(f'{len(pending)} PDFs to download; reported size {known / 1_000_000:.2f} MB'
           + (f' plus {unknown} with unknown size.' if unknown else '.'))
     if not pending:
         return
-    print('Already downloaded and accessible documents are skipped. Reported sizes may change.')
-    if input('Download these PDFs into input/? [y/N] ').strip().lower() not in ('y', 'yes'):
+    print('Documents present in any workflow folder are skipped. Reported sizes may change.')
+    if input(f'Download these PDFs into {DOWNLOADS}/? [y/N] ').strip().lower() not in ('y', 'yes'):
         print('Cancelled. No PDFs downloaded; scan results remain in inventory.json.')
         return
     client = Client(scope)
@@ -296,50 +297,26 @@ def download(data, scope):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, epilog='Status changes are explicit. A records human verification, not an automated accessibility result.')
+    parser = argparse.ArgumentParser(description=__doc__, epilog='Tree status comes from files in the three workflow folders. Use verify.py to prepare a reviewed document for publication.')
     sub = parser.add_subparsers(dest='command', required=True)
     scanner = sub.add_parser('scan', help='Discover PDFs, show tree and ask before downloading')
     scanner.add_argument('url', help='URL folder, e.g. https://example.edu/department/')
-    scanner.add_argument('--max-pages', type=int, default=250, help='Maximum visited URLs (default 250)')
+    scanner.add_argument('--max-urls', '--max-pages', dest='max_urls', type=int, default=250, help='Maximum visited URLs (default 250)')
     scanner.add_argument('--scan-only', action='store_true', help='Save inventory without asking to download')
     for name in ('tree', 'download'):
         command = sub.add_parser(name, help='Display status tree' if name == 'tree' else 'Confirm downloads from a previous scan')
         command.add_argument('url', nargs='?', help='Scope URL; defaults to most recent scan')
-    status = sub.add_parser('status', help='Record a human-selected document status')
-    status.add_argument('url', help='Exact PDF URL in the inventory')
-    status.add_argument('stage', choices=STAGES)
-    status.add_argument('--reviewer')
-    status.add_argument('--checks', help='Checks actually performed; required for A')
-    status.add_argument('--published-url', help='Defaults to original URL for content verified in place')
     args = parser.parse_args()
     try:
         data = load()
-        if args.command == 'status':
-            url = canonical(args.url)
-            if url not in data['documents']:
-                raise ValueError('URL is not in the inventory. Scan its URL subtree first.')
-            if args.stage == 'A' and (not (args.reviewer or '').strip() or not (args.checks or '').strip()):
-                raise ValueError('A requires --reviewer and --checks documenting human verification.')
-            event = {'status': args.stage, 'at': now()}
-            for key in ('reviewer', 'checks'):
-                if getattr(args, key):
-                    event[key] = getattr(args, key)
-            if args.stage == 'A':
-                event['published_url'] = canonical(args.published_url or url)
-            entry = data['documents'][url]
-            entry['status'] = args.stage
-            entry.setdefault('history', []).append(event)
-            save(data)
-            print(f'[{args.stage}] {url} — {STAGES[args.stage]}')
-            return
         latest = max(data['scans'], key=lambda s: data['scans'][s]['scanned_at'], default=None)
         if not args.url and not latest:
             raise ValueError('No scan recorded. Run site.py scan URL first.')
         scope = scope_url(args.url or latest)
         if args.command == 'scan':
-            if args.max_pages < 1:
-                raise ValueError('--max-pages must be positive.')
-            scan(data, scope, args.max_pages)
+            if args.max_urls < 1:
+                raise ValueError('--max-urls must be positive.')
+            scan(data, scope, args.max_urls)
         if args.command in ('tree', 'scan'):
             tree(data, scope)
         if args.command == 'download' or (args.command == 'scan' and not args.scan_only):

@@ -5,10 +5,12 @@ from collections import Counter
 import hashlib
 from html import escape as html_escape
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+from string import Template
 import unicodedata
 from urllib.parse import quote, urlsplit
 
@@ -17,6 +19,9 @@ import pymupdf
 from bs4 import BeautifulSoup
 
 from preview import find_chrome, preview
+from workflow import DOWNLOADS, PENDING, conversion_destination
+
+COMMAND_TEMPLATES = Path(__file__).resolve().parent / "templates"
 
 
 def clean(text):
@@ -518,23 +523,109 @@ def make_table(table, previous, page_number, page):
         note += ' Column boundaries uncertain; automatic layout used.'
     render = lambda row: '| ' + ' | '.join(escape(cell) for cell in row) + ' |'
     text = '<!-- table: ' + json.dumps({'widths': widths, 'row_header': row_header}) + ' -->\n\n'
+    if caption:
+        text += ': ' + escape(caption) + '\n\n'
     text += '\n'.join([render(header), '| ' + ' | '.join(['---'] * columns) + ' |',
                        *[render(row) for row in rows]])
-    if caption:
-        text += '\n\n: ' + escape(caption)
     return text, note, {'header': header, 'bbox': table.bbox, 'page': page_number, 'caption': caption}
 
 
-def format_review_log(markdown, page_count, page_notes):
+def review_commands(pdf, markdown, input_root=None, output_root=None, platform='mac'):
+    """Fill the approved command guide with document paths and inventory URLs."""
+    root = Path(__file__).resolve().parent
+    pdf, markdown = pdf.resolve(), markdown.resolve()
+    windows = platform == 'win'
+
+    def argument(value):
+        if not windows:
+            for char in ('\\', '"', '$', '`'):
+                value = value.replace(char, '\\' + char)
+        return '"' + value + '"'
+
+    def path_arg(path):
+        try:
+            relative = os.path.relpath(path, root)
+        except ValueError:  # A different Windows drive cannot be relative.
+            relative = str(path)
+        relative = relative.replace(os.sep, '/')
+        return argument(relative.replace('/', '\\') if windows else relative)
+
+    def table(rows):
+        lines = ['| Purpose | Command | Notes |', '| --- | --- | --- |']
+        for purpose, command, note in rows:
+            # Code spans retain shell syntax; longer delimiters handle backticks.
+            ticks = '`' * (max((len(run) for run in re.findall(r'`+', command)), default=0) + 1)
+            code = command.replace('|', '\\|')
+            lines.append(f'| {purpose} | {ticks}{code}{ticks} | {note} |')
+        return '\n'.join(lines)
+
+    inputs = input_root or (root / DOWNLOADS if pdf.is_relative_to(root / DOWNLOADS) else pdf.parent)
+    batch_output = output_root or markdown.parent.parent
+    try:
+        documents = json.loads((root / 'inventory.json').read_text(encoding='utf-8')).get('documents', {})
+    except (OSError, ValueError):
+        documents = {}
+    urls = [url for url, entry in documents.items() if entry.get('local_path')
+            and (root / entry['local_path']).resolve() == pdf]
+    scope = argument('https://example.edu/department/')
+    scan_intro = 'Replace `https://example.edu/department/` with the website folder you want to search. No unique source URL is recorded for this PDF.'
+    tracking_rows = []
+    if len(urls) == 1:
+        parts = urlsplit(urls[0])
+        scope = argument(parts._replace(path=parts.path.rsplit('/', 1)[0] + '/', query='', fragment='').geturl())
+        scan_intro = 'These commands search the website folder recorded for this PDF. Replace the URL to search another folder.'
+        tracking_rows = [
+            ('Show latest scan’s status tree', 'python site.py tree', 'Shows workflow status based on local files.'),
+            ('Show this scope’s status tree', f'python site.py tree {scope}', 'Shows this website folder.'),
+        ]
+    publication_section = 'This document uses a custom output location. `verify.py` only accepts documents under `2_pending_review/`.'
+    if markdown.is_relative_to(root / PENDING):
+        verify_command = f'python verify.py {path_arg(markdown)}'
+        publication_section = ('```\n' + verify_command + '\n```\n\n'
+                               'After the conversion has been reviewed and edited (if necessary) by a human, it is ready to be published. '
+                               'This command moves the new files to a publication folder. From there they may be uploaded to a web server.')
+        tracking_rows.append(('Mark reviewed and prepare for publication', verify_command,
+                              'Prompts for your name, moves Markdown, HTML and assets to 3_ready_to_publish/, and deletes review/. Leaves a dated receipt and destination link behind. Does not rebuild HTML.'))
+    tracking_rows.extend([
+        ('Show conversion help', 'python convert.py --help', 'Lists conversion options.'),
+        ('Show preview help', 'python preview.py --help', 'Lists preview options.'),
+        ('Show website command help', 'python site.py --help', 'Lists website commands.'),
+        ('Show scan options', 'python site.py scan --help', 'Lists scan options.'),
+        ('Show verification help', 'python verify.py --help', 'Lists verification options. Custom output locations are outside the tracked workflow.'),
+        ('Run regression tests', 'python -m unittest discover -s tests -q', 'Checks converter and preview behavior.'),
+    ])
+    template = Template((COMMAND_TEMPLATES / f'commands_{platform}.md').read_text(encoding='utf-8'))
+    return template.substitute(
+        title=escape(pdf.stem),
+        convert_command=f'python convert.py {path_arg(pdf)} {path_arg(markdown.parent.parent)}',
+        batch_command=f'python convert.py {path_arg(inputs)} {path_arg(batch_output)}',
+        preview_command=f'python preview.py {path_arg(pdf)} {path_arg(markdown)} --inspect',
+        publication_section=publication_section,
+        scan_intro=scan_intro,
+        scan_command=f'python site.py scan {scope}',
+        tracking_table=table(tracking_rows),
+    )
+
+
+def format_review_log(pdf, markdown, page_count, page_notes, document_notes=()):
     """Summarize flagged pages, keeping every warning for each page together."""
-    lines = [str(markdown.resolve()), f'{page_count} pages, {len(page_notes)} flagged for review:']
+    review = markdown.parent / 'review'
+    source_link = quote(os.path.relpath(pdf.resolve(), review.resolve()), safe='/')
+    content_link = quote(os.path.relpath(markdown.resolve(), review.resolve()), safe='/')
+    lines = [f'# {escape(pdf.stem)}', '',
+             f'[original.PDF]({source_link}) | [content.MD]({content_link}) | [preview.HTML](../preview.html)', '',
+             '## Document review', '',
+             *['- ' + escape(note) for note in document_notes], '',
+             f'## {page_count} pages, {len(page_notes)} flagged for review:', '',
+             '| Page | Check | Original | Revision |', '| --- | --- | --- | --- |']
     for number, notes in sorted(page_notes.items()):
-        details = ' '.join(' '.join(note.split()) for note in dict.fromkeys(notes))
-        lines.append(f'  Page {number}/{page_count} : {details}')
+        details = escape(' '.join(' '.join(note.split()) for note in dict.fromkeys(notes)))
+        lines.append(f'| **{number}** | {details} | [PDF]({source_link}#page={number}) '
+                     f'| [MD]({content_link}#source-page{number}) |')
     return '\n'.join(lines) + '\n'
 
 
-def convert_pdf(pdf, destination):
+def convert_pdf(pdf, destination, *, input_root=None, output_root=None):
     if destination.exists():
         raise FileExistsError(f'{destination} exists. Choose another output folder to protect edits.')
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
@@ -557,12 +648,11 @@ def convert_pdf(pdf, destination):
         font, font_note = infer_document_font(fonts, body_size)
         assets = destination / 'assets'
         destination.mkdir(parents=True)
-        output = [f'---\nfont: {font}\n---',
-                  '> Conversion draft. Headings, reading order, and tables are inferred. '
-                  'Review flagged pages and describe images before publication.',
-                  f'<!-- Source: {pdf.name}; SHA-256: {digest} -->']
+        output = [f'---\nfont: {font}\n---', f'<!-- Source: {pdf.name}; SHA-256: {digest} -->']
+        document_notes = ['Headings, reading order, and tables are inferred. '
+                          'Review flagged pages and describe images before publication.']
         if font_note:
-            output.append('> **Review font:** ' + font_note)
+            document_notes.append('Font: ' + font_note)
         previous_table = None
         found_title = False
         flagged_pages = 0
@@ -700,7 +790,7 @@ def convert_pdf(pdf, destination):
                     list_stack.clear()
                     description_number += 1
                     page_parts.append(f'<!-- description: desc-{description_number:03d} -->\n\n'
-                                      f'![Source image on page {number}; description needs review]({value})')
+                                      f'![Source image on page {number}]({value})')
                     prior = None
                 else:
                     raw = value['text']
@@ -775,18 +865,22 @@ def convert_pdf(pdf, destination):
             if previous_table and (not ordered or ordered[-1][2] != 'table'):
                 previous_table = None
             output.append(page_indent + f'<!-- Source page {number} -->')
+            output.append(page_indent + f'<a id="source-page{number}"></a>')
             if notes:
                 flagged_pages += 1
                 page_notes[number] = list(dict.fromkeys(notes))
                 review = destination / 'review'
                 review.mkdir(exist_ok=True)
-                reference = image(page, review, f'p{number:03d}-original.png')
-                output.append(page_indent + f'> **Review page {number}:** [Original page image]({reference})')
+                image(page, review, f'p{number:03d}-original.png')
             output.extend(page_parts)
         markdown = destination / 'content.md'
         review = destination / 'review'
         review.mkdir(exist_ok=True)
-        (review / 'log.txt').write_text(format_review_log(markdown, len(document), page_notes), encoding='utf-8')
+        (review / 'log.md').write_text(
+            format_review_log(pdf, markdown, len(document), page_notes, document_notes), encoding='utf-8')
+        for platform in ('mac', 'win'):
+            (review / f'commands_{platform}.md').write_text(
+                review_commands(pdf, markdown, input_root, output_root, platform), encoding='utf-8')
         markdown.write_text(join_blocks(output) + '\n', encoding='utf-8')
         return len(document), flagged_pages
 
@@ -794,7 +888,7 @@ def convert_pdf(pdf, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, epilog='Existing document folders are never overwritten. Use a new output directory to rerun.')
     parser.add_argument('input', type=Path, help='PDF file or folder (folders are scanned recursively)')
-    parser.add_argument('output', type=Path, nargs='?', default=Path('output'), help='Output root (default: output)')
+    parser.add_argument('output', type=Path, nargs='?', default=Path(PENDING), help=f'Output root (default: {PENDING})')
     parser.add_argument('--chrome', help='Chrome executable used to generate review images and HTML')
     args = parser.parse_args()
     source, target = args.input.resolve(), args.output.resolve()
@@ -812,9 +906,9 @@ def main():
         parser.error(str(exc))
     failures = 0
     for pdf in pdfs:
-        destination = target / pdf.relative_to(base).with_suffix('')
+        destination = conversion_destination(pdf, base, target)
         try:
-            pages, flagged = convert_pdf(pdf, destination)
+            pages, flagged = convert_pdf(pdf, destination, input_root=base, output_root=target)
             print(f'{pdf.name}: {pages} pages, {flagged} flagged for review -> {destination / "content.md"}')
             try:
                 preview(pdf, destination / 'content.md', chrome)

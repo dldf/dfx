@@ -72,25 +72,30 @@ the project folder; virtual environments contain absolute paths.
 
 ## Convert a PDF
 
-Place a PDF at `input/document.pdf`, or substitute the path to your own file.
+Place a PDF at `1_downloads/document.pdf`, or substitute the path to your own file.
 Quote paths containing spaces. From the project folder, run:
 
 ```sh
-python convert.py "input/document.pdf" output
+python convert.py "1_downloads/document.pdf" 2_pending_review
 ```
 
-This creates `output/document/` containing:
+This creates `2_pending_review/document/` containing:
 
 | Path | Purpose |
 | --- | --- |
-| `content.md` | Editable draft, metadata, and review warnings |
+| `content.md` | Document content, invisible page comments, and page anchors |
 | `assets/` | Extracted figures; omitted when there are no assets |
-| `review/preview.html` | Browser preview generated from Markdown |
+| `review/log.md` | Document guidance and page-specific review notes |
+| `review/commands_mac.md`, `review/commands_win.md` | Commands using this document’s paths and known source URL |
+| `preview.html` | Browser preview generated from Markdown |
 | `review/p001-original.png`, `review/p001-revised.png`, ... | Paired page images |
 
 Conversion generates the initial preview automatically. A folder input converts
-PDFs recursively. Existing document folders are protected from overwriting;
-choose a new output root, such as `output/second-pass`, for another conversion.
+PDFs recursively. The default output root is `2_pending_review/`. Converting a
+PDF or subfolder within `1_downloads/` preserves its path relative to that root
+when writing to `2_pending_review/`, so single and batch conversions agree.
+Existing document folders are protected from overwriting; choose a custom output
+root for another conversion. Custom roots are outside automatic status tracking.
 If preview generation fails after extraction, the saved Markdown remains available.
 
 ### Selecting Chrome or Chromium
@@ -100,7 +105,7 @@ Chrome application. On Windows, or for another installation location, supply
 `--chrome` to both conversion and preview commands. For a common Windows install:
 
 ```powershell
-python convert.py "input/document.pdf" output --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
+python convert.py "1_downloads/document.pdf" 2_pending_review --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
 
 Use the actual executable path on your computer. A per-user Windows installation
@@ -108,19 +113,24 @@ or a Linux executable named `chromium-browser` may need a different path.
 
 ## Review and edit
 
-Edit `output/document/content.md`, then refresh the preview:
+Open `review/log.md` for review guidance and the list of flagged pages. Each flagged
+page lists what to check, with links to the source PDF page and the Markdown page anchor.
+A flag means the converter found something that needs human review; it does not
+necessarily mean the conversion is wrong.
+
+Edit `2_pending_review/document/content.md`, then refresh the preview:
 
 ```sh
-python preview.py "input/document.pdf" "output/document/content.md"
+python preview.py "1_downloads/document.pdf" "2_pending_review/document/content.md"
 ```
 
 On Windows, include the browser path again:
 
 ```powershell
-python preview.py "input/document.pdf" "output/document/content.md" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
+python preview.py "1_downloads/document.pdf" "2_pending_review/document/content.md" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
 
-Append `--inspect` to open the saved HTML, or open `review/preview.html` yourself.
+Append `--inspect` to open the saved HTML, or open `preview.html` yourself.
 It remains available after the command finishes. Rerun preview and refresh the
 browser after editing Markdown.
 
@@ -130,13 +140,14 @@ lists, tables, and image descriptions; exact visual matching is not the goal.
 Use the HTML for keyboard and screen-reader review. PNGs cannot verify those
 interactions, and a successful conversion does not establish accessibility.
 
-Keep the `<!-- Source page N -->` markers and any `assets/` directory beside
-`review/`. Preview generation preserves Markdown and checks that the source PDF
-matches the recorded hash.
+Keep the `<!-- Source page N -->` markers and page anchors in the Markdown.
+Keep any `assets/` directory beside `content.md`. Preview generation preserves
+Markdown and checks that the source PDF matches the recorded hash.
 
 ### Fonts, emphasis, and line breaks
 
-The converter preserves detected bold and italic text and infers serif or sans
+The converter preserves detected bold and italic text, represents detected highlights
+with `<mark>`, and infers serif or sans
 from the predominant body font. You can override the choice at the top of Markdown:
 
 ```yaml
@@ -161,7 +172,8 @@ placeholder inside `![...]` with a meaningful description:
 ```
 
 Keep IDs unique. Add an unused ID immediately before each manually added image.
-Descriptions become image alt text; the preview also displays them for review.
+Descriptions become image alt text. Reviewer-only labels are not added to the HTML;
+use `review/log.md` for review guidance.
 
 ### Tables
 
@@ -179,7 +191,8 @@ Table metadata is editable:
 Widths are proportions, one per actual column; `[]` permits automatic layout.
 For simple tables, `row_header: 1` makes the first column row headers; use `0` for
 ordinary data. Pandoc captions use a line such as `: Table: Program Learning Outcomes`
-below the table. Grid-table borders must stay aligned in a monospaced editor.
+above the pipe table, separated by a blank line. Captions above or below the table
+render identically in HTML. Grid-table borders must stay aligned in a monospaced editor.
 
 Merged cells and complex header relationships still need human review. Simplify
 where appropriate, or use HTML with suitable `th`, `scope`, `rowspan`, `colspan`,
@@ -187,52 +200,79 @@ and `id`/`headers` associations. Image-only or undetected tables need reconstruc
 
 ## Optional: discover PDFs on a website
 
-Replace `https://example.edu/department/` with the website folder to scan:
+Replace `https://example.edu/department/` with the website folder you want to search:
 
 ```sh
-python site.py scan "https://example.edu/department/" --scan-only --max-pages 25
+python site.py scan "https://example.edu/department/"
 python site.py tree
 python site.py download
 ```
 
-The scanner follows links within the same host and URL folder and respects
-`robots.txt`. It cannot discover unlinked files or JavaScript-only links. The
-limit counts visited URLs, including PDFs; increase it if the scan is cut short.
+These commands:
 
-Downloading shows the pending count and reported sizes and asks for confirmation.
-Enter `y` to download; Enter or `n` cancels. Files go under
-`input/<hostname>/<website-path>/`, and existing files are not overwritten.
-Omitting `--scan-only` offers the download prompt immediately after scanning.
+1. Follow links within the website folder to discover PDFs, then offer to download them. Add `--scan-only` to skip the download prompt, or `--max-urls 100` to limit the scan to 100 visited URLs.
+2. Display discovered PDFs and their local workflow status in a tree diagram.
+3. Ask for confirmation before downloading PDFs into the local `1_downloads/` folder. This step is unnecessary if you already downloaded them during the scan.
 
-Results and manual status are saved in local `inventory.json`. That file, new
-PDF downloads, generated output, and virtual environments are excluded from Git.
-Three previously tracked sample PDFs remain in `input/cs/msu-accreditation/`.
+The scan visits up to **250 URLs by default**, including pages and PDFs. Increase `--max-urls` to search further. It follows the website’s automated-access rules in `robots.txt` and may miss unlinked files or links generated by JavaScript, so it cannot guarantee finding every PDF.
+
+The older `--max-pages` option remains an alias for `--max-urls`.
+Downloads go under `1_downloads/<hostname>/<website-path>/`. Files already present
+in the tracked workflow are skipped. Enter `y` to confirm downloading; Enter or
+`n` cancels.
+
+Scan results and download metadata are saved in local `inventory.json`. That file,
+new PDF downloads, generated documents, and virtual environments are excluded from Git.
+Existing inventory status fields are ignored; old history may remain for reference.
 
 ### Track review status
 
-Use an exact PDF URL from the scan, including any query string:
-
 ```sh
-python site.py status "PDF_URL" R
 python site.py tree
 ```
 
-| Status | Meaning |
+| Status | Determined by file presence |
 | --- | --- |
-| U | Unreviewed |
-| R | In review; downloading is optional |
-| C | Converted and reviewed; pending publication |
-| A | Accessible at its published URL; verified by a human |
+| [1] Downloaded | PDF in `1_downloads/`, with no matching Markdown in later stages |
+| [2] Pending Review | Markdown in the matching `2_pending_review/` document folder, but none in ready |
+| [3] Ready to Publish | Markdown in the matching `3_ready_to_publish/` document folder |
 
-Statuses do not advance automatically. To record completed accessibility review:
+The highest stage present wins. A folder or receipt alone does not establish a
+stage. URLs discovered without local files appear unnumbered as “not downloaded.”
+There are no manual status commands. Custom output roots remain usable for conversion,
+but are outside automatic status tracking and `verify.py`.
+
+## Prepare a reviewed document for publication
+
+Refresh and inspect the preview after your final Markdown edits, then run:
 
 ```sh
-python site.py status "PDF_URL" A --reviewer "YOUR_NAME" --checks "CHECKS_PERFORMED" --published-url "PUBLISHED_PAGE_URL"
+python verify.py "2_pending_review/document/content.md"
 ```
 
-Replace the placeholders with actual details. Omit `--published-url` when the
-original URL serves the reviewed document. This records your verification;
-it does not upload, test, or publish the document. Publication is not implemented.
+The command prompts for your name; the local date, time, and UTC offset are generated.
+It copies the Markdown, existing `preview.html`, and optional `assets/` into a
+matching document folder under `3_ready_to_publish/`, naming the HTML `frompdf.html`.
+It checks the copies before removing originals. It does not rebuild HTML or publish
+anything. Markdown, meaningful image descriptions, and `assets/` links remain intact.
+
+After success the entire original `review/` folder is deleted, including any handwritten
+notes. A two-line `ready_to_publish.txt` remains in the pending document folder:
+
+```text
+Reviewed by "NAME"; on "YYYY-MM-DD" at "HH:MM:SS UTC_OFFSET".
+file:///absolute/path/to/3_ready_to_publish/document/
+```
+
+Missing required files, blank names, existing receipts, and destination conflicts stop
+the operation. Failures before installation leave originals intact. If installation,
+receipt creation, or cleanup is interrupted, the error names the affected location and
+what remains; do not overwrite an existing destination to retry. Completed ready copies
+are retained, and interrupted cleanup can leave duplicate pending files.
+
+Old `input/` and `output/` folders are not renamed automatically. Existing conversions
+may retain old review annotations and banners; the verification command does not strip
+them. Newly generated documents keep review guidance in `review/log.md` instead.
 
 ## Troubleshooting
 
@@ -247,5 +287,5 @@ it does not upload, test, or publish the document. Publication is not implemente
 - **Little or no extracted text:** this converter has no OCR stage. Obtain a
   text-bearing PDF or transcribe/OCR the content separately before review.
 
-Run `python convert.py --help`, `python preview.py --help`, or
-`python site.py --help` for command options.
+Run `python convert.py --help`, `python preview.py --help`,
+`python site.py --help`, or `python verify.py --help` for command options.

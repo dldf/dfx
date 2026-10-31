@@ -4,3 +4,6 @@ __pycache__/
 .DS_Store
 input/
 inventory.json
+1_downloads/
+2_pending_review/
+3_ready_to_publish/

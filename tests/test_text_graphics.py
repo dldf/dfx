@@ -164,13 +164,15 @@ class TextGraphicsTests(unittest.TestCase):
         self.assertNotIn('- is a variable.', markdown)
 
     def test_page_preview_preserves_continued_list_indent(self):
-        fragment = ('\n\n    > **Review page 2:** Review\n    >\n    > - Check this.\n\n'
+        fragment = ('\n\n    <a id="source-page2"></a>\n\n'
+                    '    > **Review page 2:** Review\n    >\n    > - Check this.\n\n'
                     '    - Child continued from the prior page.\n- Next parent.\n')
         html = render_body(fragment, self.root, set(), continuation_indent=4)
         soup = BeautifulSoup(html, 'html.parser')
         self.assertIsNone(soup.select_one('pre, blockquote'))
         self.assertEqual(soup.select_one('ul ul li').get_text(), 'Child continued from the prior page.')
         self.assertNotIn('Review', soup.get_text())
+        self.assertIsNotNone(soup.select_one('a#source-page2'))
 
 
 if __name__ == '__main__':

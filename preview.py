@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Save review/preview.html and paired review PNGs; never edit Markdown."""
+"""Save preview.html beside Markdown and paired PNGs in review/; never edit Markdown."""
 import argparse
 import hashlib
+from html import escape
 import json
 import math
 from pathlib import Path
@@ -45,6 +46,11 @@ def document_css(source):
 
 
 def render_body(markdown, folder, description_ids, continuation_indent=0):
+    # Render lists without standalone anchors, then restore the anchors in the
+    # HTML. An otherwise empty anchor paragraph can change spacing or nesting.
+    anchor_pattern = r'^[ \t]*<a id="source-page(\d+)"></a>[ \t]*$'
+    anchors = re.findall(anchor_pattern, markdown, flags=re.M)
+    markdown = re.sub(anchor_pattern, '', markdown, flags=re.M)
     # Only remove the converter's review blocks, not ordinary quotations.
     markdown = re.sub(r'^[ \t]*> \*\*Review page \d+:\*\*[^\n]*(?:\n[ \t]*>[^\n]*)*',
                       '', markdown, flags=re.M)
@@ -59,6 +65,14 @@ def render_body(markdown, folder, description_ids, continuation_indent=0):
     result = subprocess.run(['pandoc', '--from=markdown+raw_html+fancy_lists+startnum-smart-implicit_figures', '--to=html5'],
                             input=markdown, capture_output=True, text=True, check=True)
     soup = BeautifulSoup(result.stdout, 'html.parser')
+    for number in reversed(anchors):
+        anchor = soup.new_tag('a', id=f'source-page{number}')
+        marker = soup.find(string=lambda s: isinstance(s, Comment)
+                           and str(s).strip() == f'Source page {number}')
+        if marker is not None:
+            marker.insert_after(anchor)
+        else:
+            soup.insert(0, anchor)
     for comment in soup.find_all(string=lambda s: isinstance(s, Comment)
                                 and str(s).strip() == 'pdf2md-list-continuation'):
         item = comment.find_parent('li')
@@ -115,9 +129,6 @@ def render_body(markdown, folder, description_ids, continuation_indent=0):
         source = (folder / unquote(img.get('src', ''))).resolve()
         if not source.is_relative_to((folder / 'assets').resolve()) or not source.is_file():
             raise ValueError(f'Image must exist inside this document\'s assets/: {img.get("src")}')
-        label = soup.new_tag('div', attrs={'class': 'description'})
-        label.string = f'{ident} — {source.relative_to(folder)}\nDescription: {img.get("alt", "")} '
-        img.insert_after(label)
         img['src'] = source.as_uri()
     return str(soup)
 
@@ -160,7 +171,7 @@ def preview(pdf, markdown, chrome, inspect=False):
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; script-src 'nonce-preview-measure'">
 <title>Source page {number} — revised</title><style>{css}
 body {{ width: {width}px; }} main {{ min-height: {height}px; }}</style></head>
-<body><main><header>REVISED · SOURCE PAGE {number} · Edit content.md, then rerun preview</header>{body}</main>
+<body><main>{body}</main>
 <script nonce="preview-measure">window.addEventListener('load', () => {{
  document.documentElement.dataset.previewHeight = Math.ceil(document.querySelector('main').getBoundingClientRect().height);
  document.documentElement.dataset.brokenImages = [...document.images].filter(i => !i.naturalWidth).length;
@@ -188,15 +199,15 @@ body {{ width: {width}px; }} main {{ min-height: {height}px; }}</style></head>
         review.mkdir(exist_ok=True)
         for png in work.glob('p*-*.png'):
             shutil.copyfile(png, review / png.name)
-        inspection = review / 'preview.html'
+        inspection = markdown.parent / 'preview.html'
         content = BeautifulSoup(''.join(bodies), 'html.parser')
         for img in content.find_all('img'):
             asset = Path(unquote(urlsplit(img['src']).path))
-            img['src'] = '../' + quote(asset.relative_to(markdown.parent).as_posix(), safe='/')
+            img['src'] = quote(asset.relative_to(markdown.parent).as_posix(), safe='/')
         inspection.write_text('<!doctype html><html lang="en"><head><meta charset="utf-8">'
                               '<meta name="viewport" content="width=device-width, initial-scale=1">'
-                              f'<title>Document review</title><style>{css}</style></head>'
-                              '<body><main><header>Generated preview — edit content.md and rerun preview.py to refresh.</header>'
+                              f'<title>{escape(markdown.parent.name)}</title><style>{css}</style></head>'
+                              '<body><main>'
                               + str(content) + '</main></body></html>', encoding='utf-8')
         if inspect:
             webbrowser.open(inspection.as_uri())
@@ -207,7 +218,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('pdf', type=Path)
     parser.add_argument('markdown', type=Path)
-    parser.add_argument('--inspect', action='store_true', help='Open the saved review/preview.html in your browser')
+    parser.add_argument('--inspect', action='store_true', help='Open the saved preview.html in your browser')
     parser.add_argument('--chrome', help='Chrome executable used to generate the preview')
     args = parser.parse_args()
     try:
