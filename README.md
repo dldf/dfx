@@ -225,6 +225,41 @@ Scan results and download metadata are saved in local `inventory.json`. That fil
 new PDF downloads, generated documents, and virtual environments are excluded from Git.
 Existing inventory status fields are ignored; old history may remain for reference.
 
+### List PDF folders without saving a scan
+
+```sh
+python site.py scan "https://example.edu/department/" --folders --max-urls 100
+```
+
+This lists only folders containing PDFs found during this scan, with a count for
+each folder. Each unique PDF URL counts once in its immediate folder, not in
+parent folders. It does not print individual PDF URLs or a status tree, save or
+change `inventory.json`, or offer downloads. It works without an inventory file.
+The scan still follows links; limits, excluded folders, and inaccessible pages can
+make the listing incomplete. Run a normal scan later to save results for downloading.
+
+### Exclude website folders
+
+Create `.pdfignore` in the `pdf2md` project root. Replace these example URLs with
+full URLs of folders to skip:
+
+```text
+# Skip these folders and everything beneath them
+https://example.edu/department/archive/
+https://example.edu/department/old-reports/
+```
+
+Blank lines and lines beginning with `#` are ignored. Each entry is a literal
+folder URL; wildcards, query strings, and fragments are not supported. A trailing
+slash is optional. `/archive/` excludes that folder and its descendants, but not
+`/archive-old/`. Rules apply to the specified scheme and host.
+
+Exclusions apply to normal scans, folder summaries, downloads, and redirects.
+Previously saved records and downloaded files are kept; excluded records can
+still appear in `site.py tree`, but are not offered for download. Excluding the
+scan root stops the scan with an error. If `.pdfignore` is absent, nothing is
+excluded beyond the existing scope and `robots.txt` rules.
+
 ### Track review status
 
 ```sh

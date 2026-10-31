@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Scan a URL subtree, confirm PDF downloads, and show folder-based review status."""
 import argparse
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timezone
 import hashlib
 from http.client import HTTPException
@@ -53,6 +53,30 @@ def within(url, scope):
             and (candidate.path.startswith(root.path) or candidate.path == root.path.rstrip('/')))
 
 
+def load_exclusions():
+    path = ROOT / '.pdfignore'
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except FileNotFoundError:
+        return ()
+    folders = []
+    for number, line in enumerate(lines, 1):
+        value = line.strip()
+        if not value or value.startswith('#'):
+            continue
+        try:
+            if '*' in value or urlsplit(value).query or urlsplit(value).fragment:
+                raise ValueError('Use literal folder URLs without wildcards, queries, or fragments.')
+            folders.append(scope_url(value))
+        except ValueError as exc:
+            raise ValueError(f'{path.name}:{number}: {exc}') from exc
+    return tuple(folders)
+
+
+def excluded(url, folders):
+    return any(within(url, folder) for folder in folders)
+
+
 def load():
     data = json.loads(INVENTORY.read_text())
     if data.get('version') != 1 or not isinstance(data.get('documents'), dict) or not isinstance(data.get('scans'), dict):
@@ -73,8 +97,9 @@ def save(data):
 
 
 class Client:
-    def __init__(self, scope):
+    def __init__(self, scope, exclusions=()):
         self.scope = scope
+        self.exclusions = exclusions
         self.last_request = 0
         self.delay = .2
         origin = urlsplit(scope)
@@ -86,7 +111,7 @@ class Client:
             def redirect_request(self, request, fp, code, msg, headers, newurl):
                 target = canonical(newurl)
                 if not client.allowed(target):
-                    raise ValueError(f'Redirect outside scope or disallowed by robots.txt: {target}')
+                    raise ValueError(f'Redirect outside scope, excluded by .pdfignore, or disallowed by robots.txt: {target}')
                 return super().redirect_request(request, fp, code, msg, headers, target)
 
         self.opener = build_opener(Redirects())
@@ -108,19 +133,24 @@ class Client:
             self.delay = max(self.delay, delay)
 
     def allowed(self, url):
-        return url == self.robots_url or (within(url, self.scope) and self.robots.can_fetch(AGENT, url))
+        return url == self.robots_url or (within(url, self.scope)
+                                         and not excluded(url, self.exclusions)
+                                         and self.robots.can_fetch(AGENT, url))
 
     def open(self, url, method='GET'):
         if not self.allowed(url):
-            raise ValueError(f'Outside scope or disallowed by robots.txt: {url}')
+            raise ValueError(f'Outside scope, excluded by .pdfignore, or disallowed by robots.txt: {url}')
         time.sleep(max(0, self.delay - (time.monotonic() - self.last_request)))
         self.last_request = time.monotonic()
         return self.opener.open(Request(url, method=method, headers={
             'User-Agent': AGENT, 'Accept-Encoding': 'identity'}), timeout=20)
 
 
-def scan(data, scope, limit):
-    client = Client(scope)
+def scan(data, scope, limit, *, folders=False):
+    exclusions = load_exclusions()
+    if excluded(scope, exclusions):
+        raise ValueError('The scan root is excluded by .pdfignore.')
+    client = Client(scope, exclusions)
     queue, queued, seen = deque([scope]), {scope}, set()
     errors, outside, found = [], set(), set()
     stamp = now()
@@ -144,11 +174,13 @@ def scan(data, scope, limit):
                 pdf = (mime == 'application/pdf' or urlsplit(final).path.lower().endswith('.pdf')
                        or '.pdf' in response.headers.get('Content-Disposition', '').lower())
                 if pdf:
-                    entry = data['documents'].setdefault(final, {'discovered_at': stamp})
-                    length = response.headers.get('Content-Length', '')
-                    entry.update({'last_seen': stamp, 'size_bytes': int(length) if length.isdigit() else None})
+                    if not folders:
+                        entry = data['documents'].setdefault(final, {'discovered_at': stamp})
+                        length = response.headers.get('Content-Length', '')
+                        entry.update({'last_seen': stamp, 'size_bytes': int(length) if length.isdigit() else None})
                     found.add(final)
-                    print(f'Found PDF: {final}', flush=True)
+                    if not folders:
+                        print(f'Found PDF: {final}', flush=True)
                     continue
                 if mime not in ('text/html', 'application/xhtml+xml'):
                     continue
@@ -167,18 +199,34 @@ def scan(data, scope, limit):
                         if urlsplit(target).path.lower().endswith('.pdf'):
                             outside.add(target)
                         continue
+                    if excluded(target, exclusions):
+                        continue
                     if target not in queued and target not in seen:
                         queue.append(target)
                         queued.add(target)
         except (OSError, ValueError, HTTPException) as exc:
             errors.append({'url': url, 'error': str(exc)})
-            print(f'Skipped {url}: {exc}')
-    data['scans'][scope] = {'scanned_at': stamp, 'visited': len(seen), 'pdfs_found': len(found),
-                           'limited': bool(queue), 'errors': errors, 'outside_pdfs': sorted(outside)}
-    save(data)
+            if not folders:
+                print(f'Skipped {url}: {exc}')
+    if folders:
+        counts = Counter()
+        for url in found:
+            parts = urlsplit(url)
+            folder = parts._replace(path=parts.path.rsplit('/', 1)[0] + '/', query='', fragment='').geturl()
+            counts[folder] += 1
+        width = max([len('PDF folder'), *map(len, counts)])
+        print(f'{"PDF folder":<{width}}  PDFs')
+        for folder, count in sorted(counts.items()):
+            print(f'{folder:<{width}}  {count:>4}')
+    else:
+        data['scans'][scope] = {'scanned_at': stamp, 'visited': len(seen), 'pdfs_found': len(found),
+                               'limited': bool(queue), 'errors': errors, 'outside_pdfs': sorted(outside)}
+        save(data)
     print(f'Found {len(found)} unique PDFs; {len(errors)} skipped URLs; {len(outside)} PDF links outside scope.')
     if queue:
         print(f'Scan limit reached ({limit} URLs). Increase --max-urls to continue discovery.')
+    if folders and (queue or errors):
+        print('Counts may be incomplete because the scan limit was reached or URLs were skipped.')
     print('Scope: linked content only; unlinked files and JavaScript-generated links may be missed.')
 
 
@@ -246,19 +294,20 @@ def document_stage(url):
 
 
 def download(data, scope):
+    exclusions = load_exclusions()
     pending = [(url, entry) for url, entry in documents(data, scope)
-               if document_stage(url) is None]
+               if not excluded(url, exclusions) and document_stage(url) is None]
     known = sum(entry['size_bytes'] for _, entry in pending if entry.get('size_bytes') is not None)
     unknown = sum(entry.get('size_bytes') is None for _, entry in pending)
     print(f'{len(pending)} PDFs to download; reported size {known / 1_000_000:.2f} MB'
           + (f' plus {unknown} with unknown size.' if unknown else '.'))
     if not pending:
         return
-    print('Documents present in any workflow folder are skipped. Reported sizes may change.')
+    print('Documents present in any workflow folder or excluded by .pdfignore are skipped. Reported sizes may change.')
     if input(f'Download these PDFs into {DOWNLOADS}/? [y/N] ').strip().lower() not in ('y', 'yes'):
         print('Cancelled. No PDFs downloaded; scan results remain in inventory.json.')
         return
-    client = Client(scope)
+    client = Client(scope, exclusions)
     for url, entry in pending:
         destination = local_path(url)
         if destination.exists():
@@ -303,19 +352,23 @@ def main():
     scanner.add_argument('url', help='URL folder, e.g. https://example.edu/department/')
     scanner.add_argument('--max-urls', '--max-pages', dest='max_urls', type=int, default=250, help='Maximum visited URLs (default 250)')
     scanner.add_argument('--scan-only', action='store_true', help='Save inventory without asking to download')
+    scanner.add_argument('--folders', action='store_true', help='Only summarize PDF folders and counts; no tree, downloads, or inventory changes')
     for name in ('tree', 'download'):
         command = sub.add_parser(name, help='Display status tree' if name == 'tree' else 'Confirm downloads from a previous scan')
         command.add_argument('url', nargs='?', help='Scope URL; defaults to most recent scan')
     args = parser.parse_args()
     try:
+        if args.command == 'scan' and args.max_urls < 1:
+            raise ValueError('--max-urls must be positive.')
+        if args.command == 'scan' and args.folders:
+            scan({}, scope_url(args.url), args.max_urls, folders=True)
+            return
         data = load()
         latest = max(data['scans'], key=lambda s: data['scans'][s]['scanned_at'], default=None)
         if not args.url and not latest:
             raise ValueError('No scan recorded. Run site.py scan URL first.')
         scope = scope_url(args.url or latest)
         if args.command == 'scan':
-            if args.max_urls < 1:
-                raise ValueError('--max-urls must be positive.')
             scan(data, scope, args.max_urls)
         if args.command in ('tree', 'scan'):
             tree(data, scope)
