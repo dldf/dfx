@@ -107,6 +107,33 @@ def document_css(source):
     return Path(__file__).with_name('review.css').read_text() + f'\nbody {{ font-family: {family}; }}\n'
 
 
+def render_blank_rules(soup):
+    """Turn blank markers into block rules, preserving their surrounding text."""
+    inline_parents = {'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a',
+                      'em', 'strong', 'mark', 'b', 'i', 'u', 's', 'del', 'ins',
+                      'small', 'sub', 'sup'}
+    for blank in soup.select('span.blank'):
+        if blank.get_text() != '---':
+            continue
+        rule = soup.new_tag('hr', attrs={'class': 'blank'})
+        blank.replace_with(rule)
+        # A rule cannot be a child of a paragraph or phrasing element. Split
+        # those wrappers around it, stopping at a list item, cell, or other block.
+        while rule.parent.name in inline_parents:
+            parent = rule.parent
+            after = soup.new_tag(parent.name, attrs=dict(parent.attrs))
+            for sibling in list(rule.next_siblings):
+                after.append(sibling.extract())
+            parent.insert_after(rule.extract())
+            before_has_content = bool(parent.get_text(strip=True) or parent.find(True))
+            if after.get_text(strip=True) or after.find(True):
+                if before_has_content:
+                    after.attrs.pop('id', None)
+                rule.insert_after(after)
+            if not before_has_content:
+                parent.decompose()
+
+
 def render_body(markdown, folder, description_ids, continuation_indent=0):
     # Render lists without standalone anchors, then restore the anchors in the
     # HTML. An otherwise empty anchor paragraph can change spacing or nesting.
@@ -127,6 +154,7 @@ def render_body(markdown, folder, description_ids, continuation_indent=0):
     result = subprocess.run(['pandoc', '--from=markdown+raw_html+fancy_lists+startnum-smart-implicit_figures', '--to=html5'],
                             input=markdown, capture_output=True, text=True, check=True)
     soup = BeautifulSoup(result.stdout, 'html.parser')
+    render_blank_rules(soup)
     for number in reversed(anchors):
         anchor = soup.new_tag('a', id=f'source-page{number}')
         marker = soup.find(string=lambda s: isinstance(s, Comment)

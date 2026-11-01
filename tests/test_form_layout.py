@@ -3,13 +3,14 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from bs4 import BeautifulSoup
 import pdfplumber
 import pymupdf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from convert import convert_pdf
+from convert import convert_pdf, grid_or_html
 from review import document_title, ensure_document_heading, render_body
 
 
@@ -46,7 +47,81 @@ class FormLayoutTests(unittest.TestCase):
             self.assertEqual(len(soup.select('ol > li')), 2)
             self.assertLess(markdown.index('![Source image'), markdown.index('# School'))
             self.assertEqual(len(soup.find_all('img')), 1)
+            self.assertIn('Student name: [---]{.blank}', markdown)
+            self.assertIsNotNone(soup.select_one('hr.blank'))
+            self.assertIsNone(soup.select_one('span.blank'))
             self.assertIn('layout container treated as text', (output / 'review/log.md').read_text())
+
+    def test_blank_threshold_and_standalone_blanks_preserve_text(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, output = root / 'blanks.pdf', root / 'output'
+            with pymupdf.open() as document:
+                page = document.new_page()
+                page.insert_text((72, 90), 'Name: ____ Date: __________ Keep: _ __ ___ <tag>')
+                page.insert_text((72, 140), '________')
+                document.save(source)
+            convert_pdf(source, output)
+            markdown = (output / 'content.md').read_text()
+            soup = BeautifulSoup(render_body(markdown, output, set()), 'html.parser')
+            self.assertEqual(len(soup.select('hr.blank')), 3)
+            self.assertEqual(soup.get_text(' ', strip=True).split('Name:')[1].strip(),
+                             'Date: Keep: _ __ ___ <tag>')
+            self.assertIsNone(soup.select_one('span.blank, p hr'))
+            self.assertIsNone(soup.find('tag'))
+
+    def test_blanks_survive_pipe_grid_and_html_tables(self):
+        for form in ('pipe', 'grid', 'HTML'):
+            with self.subTest(form=form), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, output = root / 'table.pdf', root / 'output'
+                with pymupdf.open() as document:
+                    page = document.new_page()
+                    page.draw_rect((50, 50, 400, 170))
+                    for y in (90, 130):
+                        page.draw_line((50, y), (400, y))
+                    for start, end in ((50, 90), (130, 170)):
+                        page.draw_line((225, start), (225, end))
+                    if form == 'pipe':
+                        page.draw_line((225, 90), (225, 130))
+                    page.insert_text((60, 75), 'Field', fontname='hebo')
+                    page.insert_text((235, 75), 'Answer', fontname='hebo')
+                    page.insert_text((60, 115), 'Name: ____')
+                    page.insert_text((60, 155), 'Date: ________')
+                    page.insert_text((235, 155), 'Keep: ___')
+                    document.save(source)
+                renderer = (lambda html: (html, 'HTML')) if form == 'HTML' else grid_or_html
+                with patch('convert.grid_or_html', side_effect=renderer):
+                    convert_pdf(source, output)
+                markdown = (output / 'content.md').read_text()
+                soup = BeautifulSoup(render_body(markdown, output, set()), 'html.parser')
+                self.assertEqual(len(soup.select('table hr.blank')), 2)
+                self.assertIsNone(soup.select_one('span.blank, p hr'))
+                self.assertIn('Name:', soup.table.get_text())
+                self.assertIn('Keep: ___', soup.table.get_text())
+                if form != 'pipe':
+                    self.assertIsNotNone(soup.table.find(attrs={'colspan': '2'}))
+
+    def test_rules_preserve_list_items_and_split_formatting(self):
+        markdown = ('1. **Name: [---]{.blank} Date: [---]{.blank} End.**\n'
+                    '2. Keep this item.\n\n'
+                    '- *Before [---]{.blank} after.*\n\n'
+                    '**[---]{.blank}**\n\n'
+                    'Plain *before [---]{.blank} after* done.\n\n'
+                    '<hr>\n')
+        soup = BeautifulSoup(render_body(markdown, Path('.'), set()), 'html.parser')
+        self.assertEqual(len(soup.select('hr.blank')), 5)
+        self.assertEqual(len(soup.select('ol > li')), 2)
+        self.assertEqual(len(soup.select('ol > li:first-child > hr.blank')), 2)
+        self.assertEqual(soup.select('ol > li')[1].get_text(), 'Keep this item.')
+        self.assertEqual([tag.get_text(strip=True) for tag in soup.select('ol strong')],
+                         ['Name:', 'Date:', 'End.'])
+        self.assertEqual(len(soup.select('ul > li > hr.blank')), 1)
+        self.assertEqual([tag.get_text(strip=True) for tag in soup.select('p em')],
+                         ['before', 'after'])
+        self.assertIsNone(soup.select_one('span.blank, p hr, strong hr, em hr'))
+        self.assertEqual(len(soup.select('hr:not(.blank)')), 1)
+        self.assertNotIn('---', soup.get_text())
 
     def test_legitimate_tables_are_retained(self):
         for columns, rows, width, height in ((2, 2, 612, 792), (1, 3, 612, 792), (1, 2, 300, 150), (1, 2, 612, 792)):

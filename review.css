@@ -17,6 +17,7 @@ tbody th { font-weight: normal; }
 @counter-style alpha-paren { system: extends lower-alpha; suffix: ") "; }
 ol[type="a"] { list-style-type: alpha-paren; }
 li { margin: 0; }
+hr.blank { border: 0; border-top: 1px solid #000; height: 0; padding: 0; margin: 0.4em 0; }
 img { display: block; max-width: 100%; height: auto; }
 .description { background: #fff8e9; border-left: 3px solid #875000; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }

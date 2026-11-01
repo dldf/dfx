@@ -30,6 +30,13 @@ def escape(text):
     return re.sub(r'([\\`*_\[\]<>|])', r'\\\1', clean(text))
 
 
+def format_text(text, html=False):
+    """Mark form blanks without interpreting source text as markup."""
+    if html:
+        return re.sub(r'_{4,}', '<span class="blank">---</span>', html_escape(clean(text)))
+    return re.sub(r'(?:\\_){4,}', '[---]{.blank}', escape(text))
+
+
 def infer_document_font(fonts, body_size):
     """Weight body characters over headings; use known names to check font flags."""
     names = {
@@ -185,7 +192,7 @@ def format_spans(spans, heading=False, bullet=None):
             result.append(' ')
             continue
         marks = ('**' if style & 16 else '') + ('*' if style & 2 else '')
-        formatted = marks + escape(text) + marks
+        formatted = marks + format_text(text) + marks
         if highlighted:
             formatted = '<mark>' + formatted + '</mark>'
         result.append((' ' if text[0].isspace() else '') + formatted
@@ -355,7 +362,7 @@ def extract_checkboxes(drawings, text_blocks, tables, images):
         consumed_spans.update(id(span) for span in [*enclosed, *spans])
         consumed_drawings.add(drawing['seqno'])
         consumed_tables.update(id(table) for table in touching)
-        events.append((box.y0, box.x0, 'checkbox', f'- [{"x" if enclosed else " "}] {escape(label)}'))
+        events.append((box.y0, box.x0, 'checkbox', f'- [{"x" if enclosed else " "}] {format_text(label)}'))
     # Slightly misaligned boxes on one row still read from left to right.
     row_y = None
     events.sort(key=lambda event: event[:2])
@@ -502,7 +509,7 @@ def make_table(table, previous, page_number, page):
         metadata = '<!-- table: ' + json.dumps({'widths': widths, 'row_header': 0}) + ' -->'
         lines = ['<table>']
         if caption:
-            lines.append(f'<caption>{html_escape(caption)}</caption>')
+            lines.append(f'<caption>{format_text(caption, html=True)}</caption>')
         for index, (row, positions) in enumerate(zip(rows, geometry)):
             if index == 0:
                 lines.append('<thead>' if has_header else '<tbody>')
@@ -517,7 +524,7 @@ def make_table(table, previous, page_number, page):
                 attrs = (f' colspan="{cols}"' if cols > 1 else '')
                 attrs += f' rowspan="{spans}"' if spans > 1 else ''
                 tag = 'th' if index == 0 and has_header else 'td'
-                cells.append(f'<{tag}{attrs}>{html_escape(clean(value))}</{tag}>')
+                cells.append(f'<{tag}{attrs}>{format_text(value, html=True)}</{tag}>')
             lines.append('<tr>' + ''.join(cells) + '</tr>')
         lines.append('</thead>' if has_header and len(rows) == 1 else '</tbody>')
         lines.append('</table>')
@@ -549,10 +556,10 @@ def make_table(table, previous, page_number, page):
         note += ' First column inferred as row headers; confirm or set row_header to 0.'
     if not widths:
         note += ' Column boundaries uncertain; automatic layout used.'
-    render = lambda row: '| ' + ' | '.join(escape(cell) for cell in row) + ' |'
+    render = lambda row: '| ' + ' | '.join(format_text(cell) for cell in row) + ' |'
     text = '<!-- table: ' + json.dumps({'widths': widths, 'row_header': row_header}) + ' -->\n\n'
     if caption:
-        text += ': ' + escape(caption) + '\n\n'
+        text += ': ' + format_text(caption) + '\n\n'
     text += '\n'.join([render(header), '| ' + ' | '.join(['---'] * columns) + ' |',
                        *[render(row) for row in rows]])
     return text, note, {'header': header, 'bbox': table.bbox, 'page': page_number, 'caption': caption}
@@ -788,8 +795,8 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                     raw = value['text']
                     text = value['markdown']
                     for label, uri in links:
-                        if label and escape(label) in text:
-                            text = text.replace(escape(label), f'[{escape(label)}]({uri})', 1)
+                        if label and format_text(label) in text:
+                            text = text.replace(format_text(label), f'[{format_text(label)}]({uri})', 1)
                             used_links.add(uri)
                     bullet = re.match(r'^[•●▪]\s*', raw)
                     label = re.match(r'^(\d{1,2}[.)]|[a-z][.)])(?:\s+|$)', raw)
@@ -841,7 +848,7 @@ def convert_pdf(pdf, destination, *, page_modes=None):
             flush()
             for label, uri in links:
                 if uri not in used_links:
-                    page_parts.append(f'[{escape(label or "Source link")}]({uri})')
+                    page_parts.append(f'[{format_text(label or "Source link")}]({uri})')
                     notes.append('A link was retained separately; confirm its placement.')
             if len(text_source.strip()) < 30:
                 notes.append('Little or no extractable text. Page image preserved; this converter has no OCR stage. '
