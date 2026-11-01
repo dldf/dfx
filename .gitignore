@@ -1,6 +1,8 @@
 .venv/
 output/
 __pycache__/
+*.egg-info/
+build/
 .DS_Store
 input/
 inventory.json

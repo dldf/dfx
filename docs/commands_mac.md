@@ -1,5 +1,9 @@
 # macOS
-### **$title** commands
+### Example commands
+
+These examples use `document.pdf`. Replace it with your PDF filename and use
+the matching document folder for review and staging. Run commands from the
+project root, even though this guide is in `docs/`.
 
 ```
 source .venv/bin/activate
@@ -9,25 +13,35 @@ Activate the Environment (if needed). Run from the project root in each new term
 ## Generate Markdown ✏️
 
 ```
-$convert_command
+pdf convert "1_downloads/document.pdf"
 ```
-Converts the PDF to MD. Run from the project root. This targets this output folder for the new MD, but will not overwrite any existing MDs.\
+Converts the example PDF into `2_pending_review/document/`. Run from the project root. Existing document folders are never overwritten.\
+After success, the terminal prints the review command for copying and pasting; it does not run it automatically.
+
 To convert all PDFs in the input directory, use:
 
 ```
-$batch_command
+pdf convert "1_downloads"
 ```
 
 ## Rebuild Preview 🔍
 
 ```
-$preview_command
+pdf review "2_pending_review/document" --inspect
 ```
-Creates PNG and HTML previews. Run this from the project root after editing the MD to see new PNGs and preview.html; leaves MD unchanged. (`--inspect` at the end is optional; it opens the new HTML in your browser.)
+Creates PNG and HTML previews from the document folder. Run this from the project root after editing the MD to see new PNGs and index.html; leaves MD unchanged. Styling is linked from assets/main.css. (`--inspect` at the end is optional; it opens the new HTML in your browser.)
+
+The source PDF is found from the matching path under `1_downloads/`, then by filename under `2_pending_review/`, using the recorded hash when available. If it cannot be identified, enter its path at the prompt, or press Enter on a blank line or Ctrl+C to cancel before any files change.
+
+After successful review, the terminal prints the stage command for copying and pasting; it does not run it automatically.
 
 ## Stage for Publication 🚀
 
-$publication_section
+```
+pdf stage "2_pending_review/document"
+```
+
+After the conversion has been reviewed and edited (if necessary) by a human, it is ready to be published. This command moves the new files to a publication folder. From there they may be uploaded to a web server.
 
 ## Workflow
 
@@ -39,10 +53,10 @@ _See the **Command Usage Instructions** below for how to issue commands._
 
 ## Optional: discover PDFs on a website
 
-$scan_intro
+Replace `https://example.edu/department/` with the website folder you want to search. This is an example URL, not a required source for your PDF.
 
 ```sh
-$scan_command
+python site.py scan "https://example.edu/department/"
 python site.py tree
 python site.py download
 ```
@@ -58,7 +72,7 @@ The scan visits up to **250 URLs by default**, including pages and PDFs. Increas
 ### List PDF folders without saving a scan
 
 ```sh
-$scan_command --folders --max-urls 100
+python site.py scan "https://example.edu/department/" --folders --max-urls 100
 ```
 
 This lists only folders containing PDFs found during this scan, with a count for
@@ -92,11 +106,21 @@ excluded beyond the existing scope and `robots.txt` rules.
 
 ## Tracking multiple conversions in a project
 
-$tracking_table
+| Purpose | Command | Notes |
+| --- | --- | --- |
+| Show latest scan’s status tree | `python site.py tree` | Shows workflow status based on local files. |
+| Show this scope’s status tree | `python site.py tree "https://example.edu/department/"` | Shows this website folder. |
+| Mark reviewed and prepare for publication | `pdf stage "2_pending_review/document"` | Prompts for your name, stages index.html and assets in 3_ready_to_publish/, archives Markdown and log in assets/_pdf2md/, and removes review/. Leaves a dated receipt. Does not rebuild HTML. |
+| Show conversion help | `pdf convert --help` | Lists conversion options. |
+| Show review help | `pdf review --help` | Lists review options. |
+| Show website command help | `python site.py --help` | Lists website commands. |
+| Show scan options | `python site.py scan --help` | Lists scan options. |
+| Show verification help | `pdf stage --help` | Lists verification options. Custom output locations are outside the tracked workflow. |
+| Run regression tests | `python -m unittest discover -s tests -q` | Checks converter and preview behavior. |
 
-The tree tracks file presence automatically: **[1] Downloaded** in `1_downloads/`, **[2] Pending Review** in `2_pending_review/`, and **[3] Ready to Publish** in `3_ready_to_publish/`. The highest stage present wins. Discovered URLs without local files are unnumbered and marked “not downloaded.” Custom output locations are outside this tracked workflow.
+The tree tracks file presence automatically: **[1] Downloaded** in `1_downloads/`, **[2] Pending Review** in `2_pending_review/`, and **[3] Ready to Publish** in `3_ready_to_publish/`. New ready documents require `index.html`, `assets/main.css`, and both archived Markdown files. Legacy root-level Markdown remains recognized. The highest stage present wins. Discovered URLs without local files are unnumbered and marked “not downloaded.” Custom output locations are outside this tracked workflow.
 
-For documents in `2_pending_review/`, run the verification command after human review. It prompts for your name and records the date/time. Markdown, HTML, and assets are copied and checked before originals are removed; HTML becomes `frompdf.html` without being rebuilt. The entire `review/` folder, including handwritten notes, is deleted after success. A two-line `ready_to_publish.txt` receipt stays in the pending document folder with your review record and a link to the ready folder. Existing destinations are never overwritten. Refresh the preview before verification if you edited the Markdown.
+For documents in `2_pending_review/`, run the verification command after human review. It prompts for your name and records the date/time. HTML and assets are copied and checked before originals are removed. The staged folder contains only `index.html` and `assets/`; `content.md` and `review/log.md` are archived in `assets/_pdf2md/` with relative links updated. HTML is not rebuilt. The remaining `review/` files are deleted after success. A two-line `ready_to_publish.txt` receipt stays in the pending document folder with your review record and a link to the ready folder. Existing destinations are never overwritten. Refresh the preview before verification if you edited the Markdown.
 
 ## Command Usage Instructions 📓
 
@@ -104,11 +128,11 @@ For documents in `2_pending_review/`, run the verification command after human r
 
 ### Example
 
-Copy a command like `python convert.py --help`\
+Copy a command like `pdf convert --help`\
 Paste it into a terminal at the **pdf2md** prompt. Copy only the command, not the prompt:
 
 ```
-(.venv) yourcomputer pdf2md % python convert.py --help
+(.venv) yourcomputer pdf2md % pdf convert --help
 ```
 
 These commands work in macOS Terminal with zsh or bash. They also work in bash or zsh on Linux and other Unix-like systems when the project dependencies are installed. Browser installation paths and automatic detection can differ by OS.
@@ -123,7 +147,7 @@ Run these from the project root:
 | --- | --- | --- |
 | Create the environment | `python3 -m venv .venv` | `py -m venv .venv` |
 | Activate it | `source .venv/bin/activate` | `.\.venv\Scripts\Activate.ps1` |
-| Install dependencies | `python -m pip install -r requirements.txt` | `python -m pip install -r requirements.txt` |
+| Install project and dependencies | `python -m pip install -e .` | `python -m pip install -e .` |
 
 If you have newly downloaded the project (as from github.com), and are preparing to work locally, the first step is to configure the Python virtual environment. These steps create the `.venv` folder your system needs to carry out the commands in the pdf2md project.
 
@@ -139,4 +163,4 @@ When the environment is active, you'll see the `(.venv)` at the start of the pro
 (.venv) yourcomputer pdf2md %
 ```
 
-Activation is optional: replace `python` with `.venv/bin/python` in any command. In a POSIX shell without `source`, use `. .venv/bin/activate` instead. Recreate the virtual environment when moving between operating systems. Pandoc and Chrome must also be installed.
+Activation is optional: replace `pdf` with `.venv/bin/pdf`, or `python` with `.venv/bin/python`. In a POSIX shell without `source`, use `. .venv/bin/activate` instead. Recreate the virtual environment when moving between operating systems. Pandoc and Chrome must also be installed.

@@ -1,3 +1,0 @@
-PyMuPDF>=1.24,<3
-pdfplumber>=0.11,<1
-beautifulsoup4>=4.12,<5

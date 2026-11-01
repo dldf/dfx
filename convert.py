@@ -10,7 +10,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from string import Template
 import unicodedata
 from urllib.parse import quote, urlsplit
 
@@ -18,10 +17,9 @@ import pdfplumber
 import pymupdf
 from bs4 import BeautifulSoup
 
-from preview import find_chrome, preview
-from workflow import DOWNLOADS, PENDING, conversion_destination
-
-COMMAND_TEMPLATES = Path(__file__).resolve().parent / "templates"
+from review import find_chrome, preview
+from page_classification import classify_page
+from workflow import PENDING, conversion_destination, next_command
 
 
 def clean(text):
@@ -380,6 +378,20 @@ def image(page, assets, name, box=None):
     return f'{assets.name}/{name}'
 
 
+def page_svg(page, assets, number):
+    assets.mkdir(parents=True, exist_ok=True)
+    name = f'page-{number}.svg'
+    (assets / name).write_text(page.get_svg_image(text_as_path=True), encoding='utf-8')
+    return f'{assets.name}/{name}'
+
+
+def page_mode(value):
+    match = re.fullmatch(r'([1-9]\d*)=(auto|markdown|svg)', value)
+    if not match:
+        raise argparse.ArgumentTypeError('Use PAGE=auto, PAGE=markdown, or PAGE=svg (pages start at 1).')
+    return int(match[1]), match[2]
+
+
 def simplify_header_padding(rows, geometry):
     """Collapse header padding only when every body row defines the same columns."""
     if len(rows) < 2:
@@ -436,6 +448,22 @@ def grid_or_html(html):
     except (OSError, subprocess.SubprocessError):
         pass
     return html, 'HTML'
+
+
+def is_page_layout_table(table, page, text_blocks):
+    """Reject a page-sized single body cell containing numbered prose."""
+    box = pymupdf.Rect(table.bbox)
+    if (len(table.columns) != 1 or not 1 <= len(table.rows) <= 2
+            or box.width < page.rect.width * .9 or box.height < page.rect.height * .9):
+        return False
+    body = max((pymupdf.Rect(cell) for cell in table.cells), key=lambda cell: cell.height)
+    if body.height < page.rect.height * .75:
+        return False
+    lines = [clean(''.join(span['text'] for span in line['spans']))
+             for block in text_blocks for line in block.get('lines', [])
+             if inside(line['bbox'], body)]
+    lines = [line for line in lines if line]
+    return len(lines) >= 6 and sum(bool(re.match(r'^\d{1,2}[.)](?:\s|$)', line)) for line in lines) >= 2
 
 
 def make_table(table, previous, page_number, page):
@@ -530,102 +558,26 @@ def make_table(table, previous, page_number, page):
     return text, note, {'header': header, 'bbox': table.bbox, 'page': page_number, 'caption': caption}
 
 
-def review_commands(pdf, markdown, input_root=None, output_root=None, platform='mac'):
-    """Fill the approved command guide with document paths and inventory URLs."""
-    root = Path(__file__).resolve().parent
-    pdf, markdown = pdf.resolve(), markdown.resolve()
-    windows = platform == 'win'
-
-    def argument(value):
-        if not windows:
-            for char in ('\\', '"', '$', '`'):
-                value = value.replace(char, '\\' + char)
-        return '"' + value + '"'
-
-    def path_arg(path):
-        try:
-            relative = os.path.relpath(path, root)
-        except ValueError:  # A different Windows drive cannot be relative.
-            relative = str(path)
-        relative = relative.replace(os.sep, '/')
-        return argument(relative.replace('/', '\\') if windows else relative)
-
-    def table(rows):
-        lines = ['| Purpose | Command | Notes |', '| --- | --- | --- |']
-        for purpose, command, note in rows:
-            # Code spans retain shell syntax; longer delimiters handle backticks.
-            ticks = '`' * (max((len(run) for run in re.findall(r'`+', command)), default=0) + 1)
-            code = command.replace('|', '\\|')
-            lines.append(f'| {purpose} | {ticks}{code}{ticks} | {note} |')
-        return '\n'.join(lines)
-
-    inputs = input_root or (root / DOWNLOADS if pdf.is_relative_to(root / DOWNLOADS) else pdf.parent)
-    batch_output = output_root or markdown.parent.parent
-    try:
-        documents = json.loads((root / 'inventory.json').read_text(encoding='utf-8')).get('documents', {})
-    except (OSError, ValueError):
-        documents = {}
-    urls = [url for url, entry in documents.items() if entry.get('local_path')
-            and (root / entry['local_path']).resolve() == pdf]
-    scope = argument('https://example.edu/department/')
-    scan_intro = 'Replace `https://example.edu/department/` with the website folder you want to search. No unique source URL is recorded for this PDF.'
-    tracking_rows = []
-    if len(urls) == 1:
-        parts = urlsplit(urls[0])
-        scope = argument(parts._replace(path=parts.path.rsplit('/', 1)[0] + '/', query='', fragment='').geturl())
-        scan_intro = 'These commands search the website folder recorded for this PDF. Replace the URL to search another folder.'
-        tracking_rows = [
-            ('Show latest scan’s status tree', 'python site.py tree', 'Shows workflow status based on local files.'),
-            ('Show this scope’s status tree', f'python site.py tree {scope}', 'Shows this website folder.'),
-        ]
-    publication_section = 'This document uses a custom output location. `verify.py` only accepts documents under `2_pending_review/`.'
-    if markdown.is_relative_to(root / PENDING):
-        verify_command = f'python verify.py {path_arg(markdown)}'
-        publication_section = ('```\n' + verify_command + '\n```\n\n'
-                               'After the conversion has been reviewed and edited (if necessary) by a human, it is ready to be published. '
-                               'This command moves the new files to a publication folder. From there they may be uploaded to a web server.')
-        tracking_rows.append(('Mark reviewed and prepare for publication', verify_command,
-                              'Prompts for your name, moves Markdown, HTML and assets to 3_ready_to_publish/, and deletes review/. Leaves a dated receipt and destination link behind. Does not rebuild HTML.'))
-    tracking_rows.extend([
-        ('Show conversion help', 'python convert.py --help', 'Lists conversion options.'),
-        ('Show preview help', 'python preview.py --help', 'Lists preview options.'),
-        ('Show website command help', 'python site.py --help', 'Lists website commands.'),
-        ('Show scan options', 'python site.py scan --help', 'Lists scan options.'),
-        ('Show verification help', 'python verify.py --help', 'Lists verification options. Custom output locations are outside the tracked workflow.'),
-        ('Run regression tests', 'python -m unittest discover -s tests -q', 'Checks converter and preview behavior.'),
-    ])
-    template = Template((COMMAND_TEMPLATES / f'commands_{platform}.md').read_text(encoding='utf-8'))
-    return template.substitute(
-        title=escape(pdf.stem),
-        convert_command=f'python convert.py {path_arg(pdf)} {path_arg(markdown.parent.parent)}',
-        batch_command=f'python convert.py {path_arg(inputs)} {path_arg(batch_output)}',
-        preview_command=f'python preview.py {path_arg(pdf)} {path_arg(markdown)} --inspect',
-        publication_section=publication_section,
-        scan_intro=scan_intro,
-        scan_command=f'python site.py scan {scope}',
-        tracking_table=table(tracking_rows),
-    )
-
-
-def format_review_log(pdf, markdown, page_count, page_notes, document_notes=()):
+def format_review_log(pdf, markdown, page_count, page_notes, document_notes=(), page_svgs=None):
     """Summarize flagged pages, keeping every warning for each page together."""
     review = markdown.parent / 'review'
     source_link = quote(os.path.relpath(pdf.resolve(), review.resolve()), safe='/')
     content_link = quote(os.path.relpath(markdown.resolve(), review.resolve()), safe='/')
     lines = [f'# {escape(pdf.stem)}', '',
-             f'[original.PDF]({source_link}) | [content.MD]({content_link}) | [preview.HTML](../preview.html)', '',
+             f'[original.PDF]({source_link}) | [content.MD]({content_link}) | [index.HTML](../index.html)', '',
              '## Document review', '',
              *['- ' + escape(note) for note in document_notes], '',
              f'## {page_count} pages, {len(page_notes)} flagged for review:', '',
              '| Page | Check | Original | Revision |', '| --- | --- | --- | --- |']
     for number, notes in sorted(page_notes.items()):
         details = escape(' '.join(' '.join(note.split()) for note in dict.fromkeys(notes)))
+        comparison = f' · [SVG](../{page_svgs[number]})' if page_svgs and number in page_svgs else ''
         lines.append(f'| **{number}** | {details} | [PDF]({source_link}#page={number}) '
-                     f'| [MD]({content_link}#source-page{number}) |')
+                     f'| [MD]({content_link}#source-page{number}){comparison} |')
     return '\n'.join(lines) + '\n'
 
 
-def convert_pdf(pdf, destination, *, input_root=None, output_root=None):
+def convert_pdf(pdf, destination, *, page_modes=None):
     if destination.exists():
         raise FileExistsError(f'{destination} exists. Choose another output folder to protect edits.')
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
@@ -634,6 +586,10 @@ def convert_pdf(pdf, destination, *, input_root=None, output_root=None):
             raise ValueError('Password-protected PDF; provide an unlocked copy.')
         if not document.page_count:
             raise ValueError('PDF has no pages.')
+        page_modes = dict(page_modes or {})
+        if any(not isinstance(number, int) or not 1 <= number <= len(document)
+               or mode not in ('auto', 'markdown', 'svg') for number, mode in page_modes.items()):
+            raise ValueError(f'Page overrides must use pages 1–{len(document)} and auto, markdown, or svg.')
         sizes, fonts = Counter(), Counter()
         for page in document:
             for block in page.get_text('dict')['blocks']:
@@ -648,6 +604,7 @@ def convert_pdf(pdf, destination, *, input_root=None, output_root=None):
         font, font_note = infer_document_font(fonts, body_size)
         assets = destination / 'assets'
         destination.mkdir(parents=True)
+        assets.mkdir()
         output = [f'---\nfont: {font}\n---', f'<!-- Source: {pdf.name}; SHA-256: {digest} -->']
         document_notes = ['Headings, reading order, and tables are inferred. '
                           'Review flagged pages and describe images before publication.']
@@ -657,29 +614,64 @@ def convert_pdf(pdf, destination, *, input_root=None, output_root=None):
         found_title = False
         flagged_pages = 0
         page_notes = {}
+        page_svgs = {}
         description_number = 0
         list_stack = []
         for index, page in enumerate(document):
             number = index + 1
             notes, events = [], []
-            text_source = plumb.pages[index].extract_text() or ''
+            mode = page_modes.get(number, 'auto')
+            if mode == 'svg':
+                decision, reason = 'svg', 'Whole-page SVG forced by page override.'
+            else:
+                decision, reason = None, None
             try:
-                tables = plumb.pages[index].find_tables()
+                tables = plumb.pages[index].find_tables() if mode != 'svg' else []
             except Exception as exc:
                 tables = []
                 notes.append(f'Table extraction failed ({type(exc).__name__}); check the page image.')
             if page.rotation or abs(plumb.pages[index].width - page.rect.width) > 1 or page.cropbox != page.mediabox:
                 tables = []
                 notes.append('Rotated or cropped page: table coordinates may differ; check the page image.')
-            text_blocks = page.get_text('rawdict')['blocks']
+            text_blocks = page.get_text('rawdict')['blocks'] if mode != 'svg' else []
             for block in text_blocks:
                 for line in block.get('lines', []):
                     for span in line['spans']:
                         span['text'] = ''.join(char['c'] for char in span['chars'])
+            layout_tables = [table for table in tables if is_page_layout_table(table, page, text_blocks)]
+            if layout_tables:
+                tables = [table for table in tables if table not in layout_tables]
+                notes.append('Page-sized single-column layout container treated as text; confirm reading order.')
+            page_drawings = page.get_drawings() if mode != 'svg' else []
+            page_images = page.get_image_info() if mode != 'svg' else []
+            if mode == 'auto':
+                decision, reason = classify_page(page, text_blocks, page_drawings, page_images, tables)
+            if decision in ('svg', 'uncertain'):
+                path = page_svg(page, assets, number)
+                page_svgs[number] = path
+                notes.extend([reason, 'Whole-page SVG uses outlined text to preserve appearance; '
+                              'add a meaningful text description or equivalent. It is not accessible text.'])
+                if decision == 'svg':
+                    # A preserved page must not leak text, tables, or image fragments
+                    # into the Markdown or carry list/table state into the next page.
+                    list_stack.clear()
+                    previous_table = None
+                    description_number += 1
+                    output.extend([f'<!-- Source page {number} -->', f'<a id="source-page{number}"></a>',
+                                   f'<!-- description: desc-{description_number:03d} -->\n\n'
+                                   f'![Source page {number}]({path})'])
+                    flagged_pages += 1
+                    page_notes[number] = list(dict.fromkeys(notes))
+                    review = destination / 'review'
+                    review.mkdir(exist_ok=True)
+                    image(page, review, f'p{number:03d}-original.png')
+                    continue
+                notes.append('Compare the SVG linked in this log with the Markdown before choosing a page mode.')
+            elif decision == 'scan':
+                notes.append(reason)
+            text_source = plumb.pages[index].extract_text() or ''
             join_bullet_lines(text_blocks)
-            page_drawings = page.get_drawings()
             text_traces, annotation_drawings = mark_highlights(page, text_blocks, page_drawings)
-            page_images = page.get_image_info()
             checkbox_events, checkbox_spans, checkbox_drawings, checkbox_tables = extract_checkboxes(
                 page_drawings, text_blocks, tables, page_images)
             events.extend(checkbox_events)
@@ -852,7 +844,8 @@ def convert_pdf(pdf, destination, *, input_root=None, output_root=None):
                     page_parts.append(f'[{escape(label or "Source link")}]({uri})')
                     notes.append('A link was retained separately; confirm its placement.')
             if len(text_source.strip()) < 30:
-                notes.append('Little or no extractable text. Page image preserved; OCR or transcription is needed.')
+                notes.append('Little or no extractable text. Page image preserved; this converter has no OCR stage. '
+                             'OCR or transcription is needed.')
             if '\ufffd' in text_source or '\ufffd' in '\n'.join(page_parts):
                 notes.append('Unrecognized characters found; compare with the page image.')
             missing = words(text_source) - words('\n'.join(page_parts))
@@ -877,10 +870,7 @@ def convert_pdf(pdf, destination, *, input_root=None, output_root=None):
         review = destination / 'review'
         review.mkdir(exist_ok=True)
         (review / 'log.md').write_text(
-            format_review_log(pdf, markdown, len(document), page_notes, document_notes), encoding='utf-8')
-        for platform in ('mac', 'win'):
-            (review / f'commands_{platform}.md').write_text(
-                review_commands(pdf, markdown, input_root, output_root, platform), encoding='utf-8')
+            format_review_log(pdf, markdown, len(document), page_notes, document_notes, page_svgs), encoding='utf-8')
         markdown.write_text(join_blocks(output) + '\n', encoding='utf-8')
         return len(document), flagged_pages
 
@@ -890,16 +880,23 @@ def main():
     parser.add_argument('input', type=Path, help='PDF file or folder (folders are scanned recursively)')
     parser.add_argument('output', type=Path, nargs='?', default=Path(PENDING), help=f'Output root (default: {PENDING})')
     parser.add_argument('--chrome', help='Chrome executable used to generate review images and HTML')
+    parser.add_argument('--page-mode', type=page_mode, action='append', default=[], metavar='PAGE=MODE',
+                        help='Single PDF only: override a 1-based page with auto, markdown, or svg; repeat for other pages')
     args = parser.parse_args()
     source, target = args.input.resolve(), args.output.resolve()
     if source.is_file() and source.suffix.lower() == '.pdf':
         pdfs, base = [source], source.parent
     elif source.is_dir():
+        if args.page_mode:
+            parser.error('--page-mode requires a single PDF, not a folder.')
         pdfs, base = sorted(p for p in source.rglob('*') if p.is_file() and p.suffix.lower() == '.pdf'), source
     else:
         parser.error('Input must be an existing PDF or folder.')
     if not pdfs:
         parser.error('No PDFs found.')
+    page_modes = dict(args.page_mode)
+    if len(page_modes) != len(args.page_mode):
+        parser.error('Specify each page only once with --page-mode.')
     try:
         chrome = find_chrome(args.chrome)
     except ValueError as exc:
@@ -908,13 +905,14 @@ def main():
     for pdf in pdfs:
         destination = conversion_destination(pdf, base, target)
         try:
-            pages, flagged = convert_pdf(pdf, destination, input_root=base, output_root=target)
+            pages, flagged = convert_pdf(pdf, destination, page_modes=page_modes)
             print(f'{pdf.name}: {pages} pages, {flagged} flagged for review -> {destination / "content.md"}')
             try:
                 preview(pdf, destination / 'content.md', chrome)
+                print(f'Next: {next_command("review", destination, args.chrome)}')
             except Exception as exc:
                 raise RuntimeError(f'Markdown saved, but preview failed: {exc}. '
-                                   f'Retry preview.py with this PDF and {destination / "content.md"}.') from exc
+                                   f'Retry pdf review with {destination / "content.md"}.') from exc
         except Exception as exc:
             failures += 1
             print(f'{pdf.name}: {exc}', file=sys.stderr)

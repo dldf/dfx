@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2md"
+version = "0.1.0"
+description = "Local PDF conversion and human review workflow"
+requires-python = ">=3.11"
+dependencies = [
+    "PyMuPDF>=1.24,<3",
+    "pdfplumber>=0.11,<1",
+    "beautifulsoup4>=4.12,<5",
+]
+
+[project.scripts]
+pdf = "pdf_cli:main"
+
+[tool.setuptools]
+py-modules = ["pdf_cli", "convert", "stage", "review", "workflow", "page_classification"]

@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from convert import bullet_details, convert_pdf
-from preview import render_body
+from review import render_body
 
 
 class TextGraphicsTests(unittest.TestCase):

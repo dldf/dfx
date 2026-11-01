@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import verify
+import stage
 from workflow import DOWNLOADS, PENDING, READY, conversion_destination
 
 spec = importlib.util.spec_from_file_location('pdf_site', Path(__file__).resolve().parents[1] / 'site.py')
@@ -116,18 +116,18 @@ class VerifyTests(unittest.TestCase):
         (self.source / 'review').mkdir()
         (self.source / 'review/log.md').write_text('Review notes to be deleted intentionally.')
         self.destination = self.root / READY / 'example.edu' / 'report'
-        self.before = verify.snapshot(self.source, 'content.md', 'preview.html')
+        self.before = stage.snapshot(self.source, 'content.md', 'preview.html')
 
     def unchanged(self):
-        self.assertEqual(verify.snapshot(self.source, 'content.md', 'preview.html'), self.before)
+        self.assertEqual(stage.snapshot(self.source, 'content.md', 'preview.html'), self.before)
         self.assertTrue((self.source / 'review/log.md').is_file())
 
     def test_success_prompts_moves_unchanged_files_and_leaves_two_line_receipt(self):
         with patch('builtins.input', return_value='Jane Smith') as prompt:
-            result = verify.verify_document(self.markdown, root=self.root)
+            result = stage.verify_document(self.markdown, root=self.root)
         prompt.assert_called_once()
         self.assertEqual(result, self.destination)
-        self.assertEqual(verify.snapshot(result, 'content.md', 'frompdf.html'), self.before)
+        self.assertEqual(stage.snapshot(result, 'content.md', 'frompdf.html'), self.before)
         self.assertFalse((result / 'preview.html').exists())
         self.assertFalse((result / 'review').exists())
         self.assertEqual([path.name for path in self.source.iterdir()], ['ready_to_publish.txt'])
@@ -140,14 +140,14 @@ class VerifyTests(unittest.TestCase):
         self.destination.mkdir(parents=True)
         (self.destination / 'keep.txt').write_text('existing')
         with patch('builtins.input') as prompt, self.assertRaises(FileExistsError):
-            verify.verify_document(self.markdown, root=self.root)
+            stage.verify_document(self.markdown, root=self.root)
         prompt.assert_not_called()
         self.assertEqual((self.destination / 'keep.txt').read_text(), 'existing')
         self.unchanged()
 
     def test_copy_failure_does_not_delete_originals(self):
-        with patch('verify.shutil.copy2', side_effect=OSError('disk full')), self.assertRaisesRegex(RuntimeError, 'originals and review files are unchanged'):
-            verify.verify_document(self.markdown, 'Jane', root=self.root)
+        with patch('stage.shutil.copy2', side_effect=OSError('disk full')), self.assertRaisesRegex(RuntimeError, 'originals and review files are unchanged'):
+            stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.unchanged()
         self.assertFalse(self.destination.exists())
         self.assertFalse((self.source / 'ready_to_publish.txt').exists())
@@ -159,17 +159,17 @@ class VerifyTests(unittest.TestCase):
             if Path(source).name == 'preview.html':
                 self.markdown.write_text('New edit while copying')
             return result
-        with patch('verify.shutil.copy2', side_effect=change), self.assertRaisesRegex(RuntimeError, 'changed during verification'):
-            verify.verify_document(self.markdown, 'Jane', root=self.root)
+        with patch('stage.shutil.copy2', side_effect=change), self.assertRaisesRegex(RuntimeError, 'changed during verification'):
+            stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.assertEqual(self.markdown.read_text(), 'New edit while copying')
         self.assertFalse(self.destination.exists())
         self.assertTrue((self.source / 'review/log.md').exists())
 
     def test_receipt_failure_leaves_ready_copy_and_all_originals(self):
-        with patch('verify.write_receipt', side_effect=OSError('permission denied')), self.assertRaisesRegex(RuntimeError, 'Ready copy is complete'):
-            verify.verify_document(self.markdown, 'Jane', root=self.root)
+        with patch('stage.write_receipt', side_effect=OSError('permission denied')), self.assertRaisesRegex(RuntimeError, 'Ready copy is complete'):
+            stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.unchanged()
-        self.assertEqual(verify.snapshot(self.destination, 'content.md', 'frompdf.html'), self.before)
+        self.assertEqual(stage.snapshot(self.destination, 'content.md', 'frompdf.html'), self.before)
 
     def test_interrupted_cleanup_preserves_complete_ready_copy_and_receipt(self):
         remove = shutil.rmtree
@@ -177,9 +177,9 @@ class VerifyTests(unittest.TestCase):
             if Path(path) == self.source / 'review':
                 raise PermissionError('review locked')
             return remove(path, *args, **kwargs)
-        with patch('verify.shutil.rmtree', side_effect=interrupt), self.assertRaisesRegex(RuntimeError, 'Cleanup was interrupted'):
-            verify.verify_document(self.markdown, 'Jane', root=self.root)
-        self.assertEqual(verify.snapshot(self.destination, 'content.md', 'frompdf.html'), self.before)
+        with patch('stage.shutil.rmtree', side_effect=interrupt), self.assertRaisesRegex(RuntimeError, 'Cleanup was interrupted'):
+            stage.verify_document(self.markdown, 'Jane', root=self.root)
+        self.assertEqual(stage.snapshot(self.destination, 'content.md', 'frompdf.html'), self.before)
         self.assertTrue((self.source / 'ready_to_publish.txt').is_file())
         self.assertTrue((self.source / 'review/log.md').is_file())
 
@@ -190,16 +190,16 @@ class VerifyTests(unittest.TestCase):
                 raise OSError('cannot install HTML')
             return link(path, target)
         with patch.object(Path, 'hardlink_to', interrupt), self.assertRaisesRegex(RuntimeError, 'Installation failed'):
-            verify.verify_document(self.markdown, 'Jane', root=self.root)
+            stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.unchanged()
         self.assertFalse((self.destination / 'content.md').exists())
 
     def test_missing_asset_and_blank_name_stop_without_destination(self):
         with self.assertRaisesRegex(ValueError, 'nonempty reviewer'):
-            verify.verify_document(self.markdown, '  ', root=self.root)
+            stage.verify_document(self.markdown, '  ', root=self.root)
         (self.source / 'assets/figure.png').unlink()
         with patch('builtins.input') as prompt, self.assertRaisesRegex(ValueError, 'HTML image must exist'):
-            verify.verify_document(self.markdown, root=self.root)
+            stage.verify_document(self.markdown, root=self.root)
         prompt.assert_not_called()
         self.assertFalse(self.destination.exists())
         self.assertTrue(self.markdown.exists())
@@ -211,7 +211,7 @@ class VerifyTests(unittest.TestCase):
         outside.write_text('keep me')
         asset.symlink_to(outside)
         with self.assertRaisesRegex(ValueError, 'Unsupported asset'):
-            verify.verify_document(self.markdown, 'Jane', root=self.root)
+            stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.assertEqual(outside.read_text(), 'keep me')
         self.assertTrue(self.markdown.is_file())
 
@@ -219,7 +219,7 @@ class VerifyTests(unittest.TestCase):
         shutil.rmtree(self.source / 'assets')
         self.markdown.write_text('# Plain document')
         (self.source / 'preview.html').write_text('<h1>Plain document</h1>')
-        destination = verify.verify_document(self.markdown, 'Jane', root=self.root)
+        destination = stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.assertTrue((destination / 'content.md').is_file())
         self.assertFalse((destination / 'assets').exists())
 

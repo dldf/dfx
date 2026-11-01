@@ -346,7 +346,7 @@ def download(data, scope):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, epilog='Tree status comes from files in the three workflow folders. Use verify.py to prepare a reviewed document for publication.')
+    parser = argparse.ArgumentParser(description=__doc__, epilog='Tree status comes from files in the three workflow folders. Use stage.py to prepare a reviewed document for publication.')
     sub = parser.add_subparsers(dest='command', required=True)
     scanner = sub.add_parser('scan', help='Discover PDFs, show tree and ask before downloading')
     scanner.add_argument('url', help='URL folder, e.g. https://example.edu/department/')

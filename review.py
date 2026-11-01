@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Save preview.html beside Markdown and paired PNGs in review/; never edit Markdown."""
+"""Save index.html beside Markdown and paired PNGs in review/; never edit Markdown."""
 import argparse
 import hashlib
 from html import escape
@@ -9,12 +9,74 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import webbrowser
 from urllib.parse import quote, unquote, urlsplit
 
 from bs4 import BeautifulSoup, Comment
 import pymupdf
+
+from workflow import ROOT, DOWNLOADS, PENDING, document_markdown, html_name, next_command
+
+
+def validate_source(pdf, digest):
+    if pdf.suffix.lower() != '.pdf' or not pdf.is_file():
+        raise ValueError(f'Choose an existing PDF file: {pdf}')
+    if digest:
+        with pdf.open('rb') as stream:
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != digest:
+                raise ValueError('This PDF does not match the source recorded in the Markdown.')
+    with pymupdf.open(pdf) as document:
+        if not document.is_pdf:
+            raise ValueError(f'Not a PDF file: {pdf}')
+    return pdf
+
+
+def resolve_source(markdown, root=None):
+    """Find the original PDF before rendering, or ask for its location."""
+    root = (root or ROOT).resolve()
+    markdown = markdown.resolve()
+    source = markdown.read_text(encoding='utf-8')
+    match = re.search(r'SHA-256: ([a-f0-9]{64})', source)
+    digest = match[1] if match else None
+    pending = root / PENDING
+    name = markdown.parent.name
+
+    def select(paths):
+        matches = []
+        for path in sorted(paths):
+            if path.stem != name or path.suffix.lower() != '.pdf':
+                continue
+            try:
+                matches.append(validate_source(path, digest))
+            except (OSError, ValueError, RuntimeError):
+                continue
+        # Identical hashes identify the same source even if copies exist.
+        if matches and (digest or len(matches) == 1):
+            return matches[0]
+        return None
+
+    if markdown.parent.is_relative_to(pending) and markdown.parent != pending:
+        relative = markdown.parent.relative_to(pending)
+        directory = root / DOWNLOADS / relative.parent
+        if directory.is_dir():
+            pdf = select(directory.iterdir())
+            if pdf is not None:
+                return pdf
+    pdf = select(pending.rglob('*'))
+    if pdf is not None:
+        return pdf
+    if not sys.stdin.isatty():
+        raise ValueError('Original PDF could not be identified automatically. '
+                         'Run pdf review in an interactive terminal to enter its path or cancel.')
+    value = input('Original PDF not found or could not be identified.\n'
+                  'Enter its path, or press Enter to cancel: ').strip()
+    if not value:
+        return None
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in '\"\'':
+        value = value[1:-1]
+    return validate_source(Path(value).expanduser().resolve(), digest)
 
 
 def find_chrome(chrome=None):
@@ -133,6 +195,19 @@ def render_body(markdown, folder, description_ids, continuation_indent=0):
     return str(soup)
 
 
+def document_title(name):
+    """Make filename-based titles readable while preserving uppercase acronyms."""
+    return ' '.join(word if word.isupper() else word[:1].upper() + word[1:]
+                    for word in name.replace('_', ' ').split())
+
+
+def ensure_document_heading(bodies, title):
+    """Add one fallback h1 only when no page already contains one."""
+    if bodies and not any(BeautifulSoup(body, 'html.parser').find('h1') for body in bodies):
+        return [f'<h1>{escape(title)}</h1>\n' + bodies[0], *bodies[1:]]
+    return bodies
+
+
 def preview(pdf, markdown, chrome, inspect=False):
     source = markdown.read_text(encoding='utf-8')
     digest = re.search(r'SHA-256: ([a-f0-9]{64})', source)
@@ -143,11 +218,19 @@ def preview(pdf, markdown, chrome, inspect=False):
                     re.finditer(r'(?m)^( *)<!-- Source page (\d+) -->', source)}
     css = document_css(source)
     review = markdown.parent / 'review'
+    inspection = markdown.parent / html_name(markdown.parent)
+    external_css = inspection.name == 'index.html'
+    title = document_title(markdown.parent.name)
     with pymupdf.open(pdf) as document, tempfile.TemporaryDirectory(prefix='access-preview-') as tmp:
         if [int(n) for n in parts[1::2]] != list(range(1, len(document) + 1)):
             raise ValueError('Keep one <!-- Source page N --> marker per PDF page, in order.')
         work = Path(tmp)
+        (work / 'main.css').write_text(css, encoding='utf-8')
         description_ids = set()
+        page_bodies = [render_body(parts[2 * number], markdown.parent, description_ids,
+                                  continuation_indent=page_indents.get(number, 0))
+                       for number in range(1, len(document) + 1)]
+        page_bodies = ensure_document_heading(page_bodies, title)
         bodies = []
         browser = [chrome, '--headless', '--disable-gpu', '--hide-scrollbars',
                    '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
@@ -163,15 +246,13 @@ def preview(pdf, markdown, chrome, inspect=False):
         for index, page in enumerate(document):
             number = index + 1
             width, height = math.ceil(page.rect.width * 1.5), math.ceil(page.rect.height * 1.5)
-            body = render_body(parts[2 * number], markdown.parent, description_ids,
-                               continuation_indent=page_indents.get(number, 0))
+            body = page_bodies[index]
             bodies.append(f'<section aria-label="Source page {number}">{body}</section>')
             html = work / f'p{number:03d}.html'
             html.write_text(f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; script-src 'nonce-preview-measure'">
-<title>Source page {number} — revised</title><style>{css}
-body {{ width: {width}px; }} main {{ min-height: {height}px; }}</style></head>
-<body><main>{body}</main>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: data:; style-src file: 'unsafe-inline'; script-src 'nonce-preview-measure'">
+<title>Source page {number} — revised</title><link rel="stylesheet" href="main.css"></head>
+<body style="width: {width}px"><main style="min-height: {height}px">{body}</main>
 <script nonce="preview-measure">window.addEventListener('load', () => {{
  document.documentElement.dataset.previewHeight = Math.ceil(document.querySelector('main').getBoundingClientRect().height);
  document.documentElement.dataset.brokenImages = [...document.images].filter(i => !i.naturalWidth).length;
@@ -199,14 +280,17 @@ body {{ width: {width}px; }} main {{ min-height: {height}px; }}</style></head>
         review.mkdir(exist_ok=True)
         for png in work.glob('p*-*.png'):
             shutil.copyfile(png, review / png.name)
-        inspection = markdown.parent / 'preview.html'
+        if external_css:
+            (markdown.parent / 'assets').mkdir(exist_ok=True)
+            shutil.copyfile(work / 'main.css', markdown.parent / 'assets/main.css')
+        stylesheet = '<link rel="stylesheet" href="assets/main.css">' if external_css else f'<style>{css}</style>'
         content = BeautifulSoup(''.join(bodies), 'html.parser')
         for img in content.find_all('img'):
             asset = Path(unquote(urlsplit(img['src']).path))
             img['src'] = quote(asset.relative_to(markdown.parent).as_posix(), safe='/')
         inspection.write_text('<!doctype html><html lang="en"><head><meta charset="utf-8">'
                               '<meta name="viewport" content="width=device-width, initial-scale=1">'
-                              f'<title>{escape(markdown.parent.name)}</title><style>{css}</style></head>'
+                              f'<title>{escape(title)}</title>{stylesheet}</head>'
                               '<body><main>'
                               + str(content) + '</main></body></html>', encoding='utf-8')
         if inspect:
@@ -216,15 +300,24 @@ body {{ width: {width}px; }} main {{ min-height: {height}px; }}</style></head>
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('pdf', type=Path)
-    parser.add_argument('markdown', type=Path)
-    parser.add_argument('--inspect', action='store_true', help='Open the saved preview.html in your browser')
+    parser.add_argument('markdown', type=Path, help='Document folder (or Markdown file); the original PDF is located automatically')
+    parser.add_argument('--inspect', action='store_true', help='Open the saved HTML in your browser')
     parser.add_argument('--chrome', help='Chrome executable used to generate the preview')
     args = parser.parse_args()
+    markdown = document_markdown(args.markdown).resolve()
     try:
-        preview(args.pdf.resolve(), args.markdown.resolve(), find_chrome(args.chrome), args.inspect)
+        try:
+            pdf = resolve_source(markdown)
+        except (KeyboardInterrupt, EOFError):
+            pdf = None
+        if pdf is None:
+            print('Review cancelled. No files changed.')
+            return
+        preview(pdf, markdown, find_chrome(args.chrome), args.inspect)
+        if markdown.parent.is_relative_to(ROOT / PENDING):
+            print(f'Next: {next_command("stage", markdown.parent)}')
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-        parser.exit(1, f'Preview failed: {exc}\n')
+        parser.exit(1, f'Review failed: {exc}\n')
 
 
 if __name__ == '__main__':
