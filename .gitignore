@@ -8,5 +8,6 @@ inventory.json
 3_ready_to_publish/
 .pdfignore
 /worklog.md
-/znotes*
-page_classification.md
+/z*
+page_classification_doc.md
+*_doc.*
