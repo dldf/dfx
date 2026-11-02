@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 
 from review import find_chrome, preview
 from page_classification import classify_page
-from workflow import PENDING, conversion_destination, next_command
+from workflow import PENDING, conversion_destination, diagnostic_only, next_command
 
 
 def clean(text):
@@ -500,20 +500,32 @@ def make_table(table, previous, page_number, page):
         edges = grids[0]
         widths = [round(100 * (b - a) / (edges[-1] - edges[0]), 2)
                   for a, b in zip(edges, edges[1:])]
-    if any(None in row for row in rows):
-        # Pipe tables cannot express spans. Try a lossless grid representation.
+    continuation = (previous and previous['page'] == page_number - 1
+                    and len(previous['header']) == columns and not caption and not header_bold
+                    and abs(previous['bbox'][0] - table.bbox[0]) < 8
+                    and abs(previous['bbox'][2] - table.bbox[2]) < 8)
+    complex_cells = any(None in row for row in rows)
+    empty_header = not any(clean(cell) for cell in rows[0])
+    if complex_cells or (empty_header and not continuation):
+        # Pipe tables cannot preserve spans or a completely empty header row.
+        # Try a lossless grid representation, falling back to HTML.
         if not caption and has_header:
-            caption = 'Table: ' + next(clean(cell) for cell in rows[0] if clean(cell))
+            label = next((clean(cell) for cell in rows[0] if clean(cell)), '')
+            caption = 'Table: ' + label if label else ''
         xs = sorted({cell[0] for cell in table.cells} | {table.bbox[2]})
         ys = sorted({cell[1] for cell in table.cells} | {table.bbox[3]})
         metadata = '<!-- table: ' + json.dumps({'widths': widths, 'row_header': 0}) + ' -->'
         lines = ['<table>']
         if caption:
             lines.append(f'<caption>{format_text(caption, html=True)}</caption>')
+        # A rowspan cannot cross from thead into tbody. In that case keep one
+        # row group, with first-row th cells supplying the assumed headers.
+        separate_header = not (len(geometry) > 1 and any(
+            cell and cell[3] > geometry[1].bbox[1] + .1 for cell in geometry[0].cells))
         for index, (row, positions) in enumerate(zip(rows, geometry)):
             if index == 0:
-                lines.append('<thead>' if has_header else '<tbody>')
-            elif index == 1 and has_header:
+                lines.append('<thead>' if separate_header else '<tbody>')
+            elif index == 1 and separate_header:
                 lines.append('</thead><tbody>')
             cells = []
             for value, cell in zip(row, positions.cells):
@@ -523,20 +535,19 @@ def make_table(table, previous, page_number, page):
                 spans = sum(cell[1] - .1 <= y < cell[3] - .1 for y in ys)
                 attrs = (f' colspan="{cols}"' if cols > 1 else '')
                 attrs += f' rowspan="{spans}"' if spans > 1 else ''
-                tag = 'th' if index == 0 and has_header else 'td'
+                tag = 'th' if index == 0 else 'td'
                 cells.append(f'<{tag}{attrs}>{format_text(value, html=True)}</{tag}>')
             lines.append('<tr>' + ''.join(cells) + '</tr>')
-        lines.append('</thead>' if has_header and len(rows) == 1 else '</tbody>')
+        lines.append('</thead>' if separate_header and len(rows) == 1 else '</tbody>')
         lines.append('</table>')
         text, form = grid_or_html('\n'.join(lines))
-        note = f'Merged or split cells: retained as a {form} table. Check inferred headings and header associations.'
+        detail = 'Merged or split cells' if complex_cells else 'Empty first header row'
+        note = f'{detail}: retained as a {form} table. Check inferred headings and header associations.'
+        if not has_header:
+            note += ' No header detected; first row assumed to be the header.'
         if form == 'HTML':
             note += ' Grid conversion could not be verified without loss; HTML retained.'
         return metadata + '\n\n' + text, note, None
-    continuation = (previous and previous['page'] == page_number - 1
-                    and len(previous['header']) == columns and not caption and not header_bold
-                    and abs(previous['bbox'][0] - table.bbox[0]) < 8
-                    and abs(previous['bbox'][2] - table.bbox[2]) < 8)
     if continuation:
         header = previous['header']
         note = 'Possible continued table: column headings reused from the preceding page; confirm the association.'
@@ -544,11 +555,11 @@ def make_table(table, previous, page_number, page):
         header = rows.pop(0)
         note = 'Table structure and column headings inferred; check cell associations.'
     else:
-        header = [f'Column {i + 1}' for i in range(columns)]
-        note = 'Column headings uncertain: generic headings added; all extracted rows retained.'
+        header = rows.pop(0)
+        note = 'No header detected; first row assumed to be the header. Check cell associations.'
     if not caption and (has_header or continuation):
-        caption = (previous.get('caption', '') if continuation else '') or 'Table: ' + next(
-            clean(cell) for cell in header if clean(cell))
+        label = next((clean(cell) for cell in header if clean(cell)), '')
+        caption = (previous.get('caption', '') if continuation else '') or ('Table: ' + label if label else '')
     labels = [clean(row[0]) for row in rows if any(clean(cell) for cell in row)]
     row_header = int(bool(labels) and all(labels) and len(set(labels)) == len(labels)
                      and not header[0].startswith('Column '))
@@ -584,8 +595,35 @@ def format_review_log(pdf, markdown, page_count, page_notes, document_notes=(), 
     return '\n'.join(lines) + '\n'
 
 
+def extract_page_inputs(page, plumb_page, *, skip=False):
+    """Prepare the same classification inputs for conversion and diagnosis."""
+    notes = []
+    try:
+        detected_tables = plumb_page.find_tables() if not skip else []
+    except Exception as exc:
+        detected_tables = []
+        notes.append(f'Table extraction failed ({type(exc).__name__}); check the page image.')
+    tables = detected_tables
+    if page.rotation or abs(plumb_page.width - page.rect.width) > 1 or page.cropbox != page.mediabox:
+        tables = []
+        notes.append('Rotated or cropped page: table coordinates may differ; check the page image.')
+    blocks = page.get_text('rawdict')['blocks'] if not skip else []
+    for block in blocks:
+        for line in block.get('lines', []):
+            for span in line['spans']:
+                span['text'] = ''.join(char['c'] for char in span['chars'])
+    layout_tables = [table for table in tables if is_page_layout_table(table, page, blocks)]
+    if layout_tables:
+        tables = [table for table in tables if table not in layout_tables]
+        notes.append('Page-sized single-column layout container treated as text; confirm reading order.')
+    return dict(blocks=blocks, drawings=page.get_drawings() if not skip else [],
+                images=page.get_image_info() if not skip else [], tables=tables,
+                detected_tables=detected_tables, notes=notes)
+
+
 def convert_pdf(pdf, destination, *, page_modes=None):
-    if destination.exists():
+    has_diagnostic = diagnostic_only(destination)
+    if (destination.exists() or destination.is_symlink()) and not has_diagnostic:
         raise FileExistsError(f'{destination} exists. Choose another output folder to protect edits.')
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
     with pymupdf.open(pdf) as document, pdfplumber.open(pdf) as plumb:
@@ -610,7 +648,9 @@ def convert_pdf(pdf, destination, *, page_modes=None):
         body_size = sizes.most_common(1)[0][0] if sizes else 11
         font, font_note = infer_document_font(fonts, body_size)
         assets = destination / 'assets'
-        destination.mkdir(parents=True)
+        if has_diagnostic and not diagnostic_only(destination):
+            raise FileExistsError(f'{destination} changed; nothing converted.')
+        destination.mkdir(parents=True, exist_ok=has_diagnostic)
         assets.mkdir()
         output = [f'---\nfont: {font}\n---', f'<!-- Source: {pdf.name}; SHA-256: {digest} -->']
         document_notes = ['Headings, reading order, and tables are inferred. '
@@ -632,25 +672,10 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                 decision, reason = 'svg', 'Whole-page SVG forced by page override.'
             else:
                 decision, reason = None, None
-            try:
-                tables = plumb.pages[index].find_tables() if mode != 'svg' else []
-            except Exception as exc:
-                tables = []
-                notes.append(f'Table extraction failed ({type(exc).__name__}); check the page image.')
-            if page.rotation or abs(plumb.pages[index].width - page.rect.width) > 1 or page.cropbox != page.mediabox:
-                tables = []
-                notes.append('Rotated or cropped page: table coordinates may differ; check the page image.')
-            text_blocks = page.get_text('rawdict')['blocks'] if mode != 'svg' else []
-            for block in text_blocks:
-                for line in block.get('lines', []):
-                    for span in line['spans']:
-                        span['text'] = ''.join(char['c'] for char in span['chars'])
-            layout_tables = [table for table in tables if is_page_layout_table(table, page, text_blocks)]
-            if layout_tables:
-                tables = [table for table in tables if table not in layout_tables]
-                notes.append('Page-sized single-column layout container treated as text; confirm reading order.')
-            page_drawings = page.get_drawings() if mode != 'svg' else []
-            page_images = page.get_image_info() if mode != 'svg' else []
+            inputs = extract_page_inputs(page, plumb.pages[index], skip=mode == 'svg')
+            tables, text_blocks = inputs['tables'], inputs['blocks']
+            page_drawings, page_images = inputs['drawings'], inputs['images']
+            notes.extend(inputs['notes'])
             if mode == 'auto':
                 decision, reason = classify_page(page, text_blocks, page_drawings, page_images, tables)
             if decision in ('svg', 'uncertain'):
@@ -708,6 +733,8 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                             data = {'text': clean(''.join(s['text'] for s in group)),
                                     'markdown': format_spans(group, heading=kind == 'heading', bullet=bullet),
                                     'bullet': bullet,
+                                    'baseline': round(group[0]['origin'][1], 2),
+                                    'has_bold': any(s['flags'] & 16 and s['text'].strip() for s in group),
                                     'bbox': line['bbox'], 'size': max(s['size'] for s in group)}
                             events.append((line['bbox'][1], group[0]['bbox'][0], kind, data))
             for idx, info in enumerate(page_images):
@@ -749,14 +776,19 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                 elif link.get('kind') == pymupdf.LINK_GOTO:
                     notes.append(f'Internal PDF link points to source page {link.get("page", 0) + 1}; restore the Markdown destination after review.')
             page_parts, paragraph = [], ''
+            paragraph_lines, paragraph_has_bold = set(), False
             prior = None
             used_links = set()
 
             def flush():
-                nonlocal paragraph
+                nonlocal paragraph, paragraph_has_bold
                 if paragraph:
+                    if paragraph_has_bold:
+                        paragraph += f' <!-- pdf2md-inline-heading: {len(paragraph_lines)} -->'
                     page_parts.append(paragraph)
                     paragraph = ''
+                paragraph_lines.clear()
+                paragraph_has_bold = False
 
             ordered = sorted(events, key=lambda event: (round(event[0], 1), event[1]))
             # Keep page metadata inside the prior item when a list crosses a
@@ -844,6 +876,9 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                                 flush()
                         separator = '\\\n' if event_index in line_breaks else ' '
                         paragraph += (separator if paragraph else '') + text
+                    if kind != 'heading' and paragraph:
+                        paragraph_lines.add(value['baseline'])
+                        paragraph_has_bold = paragraph_has_bold or value['has_bold']
                     prior = value if kind != 'heading' else None
             flush()
             for label, uri in links:
@@ -883,7 +918,7 @@ def convert_pdf(pdf, destination, *, page_modes=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, epilog='Existing document folders are never overwritten. Use a new output directory to rerun.')
+    parser = argparse.ArgumentParser(description=__doc__, epilog='Existing conversions are never overwritten. A folder containing only review/diagnostic.md may be used.')
     parser.add_argument('input', type=Path, help='PDF file or folder (folders are scanned recursively)')
     parser.add_argument('output', type=Path, nargs='?', default=Path(PENDING), help=f'Output root (default: {PENDING})')
     parser.add_argument('--chrome', help='Chrome executable used to generate review images and HTML')

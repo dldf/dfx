@@ -123,6 +123,65 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(saved['scans'][self.scope]['pdfs_found'], 4)
         self.assertIn('Found PDF:', output.getvalue())
         self.assertNotIn(ignored, self.requests)
+        self.assertEqual(saved['documents'][self.scope + 'reports/one.pdf']['referring_pages'], [
+            {'text': 'one', 'url': self.scope},
+            {'text': 'duplicate', 'url': self.scope},
+            {'text': 'alias', 'url': self.scope},
+        ])
+
+    def test_referring_pages_keep_distinct_pairs_and_preserve_rescan_metadata(self):
+        pdf = self.scope + 'reports/one.pdf'
+        page = self.scope + 'advising/'
+        self.routes[self.scope] = (
+            '<a href="reports/one.pdf"> Course <strong>Plan</strong> </a>'
+            '<a href="reports/one.pdf#page=1">Course\nPlan</a>'
+            '<a href="advising/">Advising</a>', 'text/html')
+        self.routes[page] = (
+            '<a href="../reports/one.pdf">Course Plan</a>'
+            '<a href="../reports/one.pdf">Another title</a>'
+            '<a href="../reports/one.pdf"><img alt="Not textContent"></a>'
+            '<embed src="../reports/one.pdf">', 'text/html')
+        prior = {'text': 'Earlier reference', 'url': self.scope + 'old/'}
+        data = {'version': 1, 'documents': {pdf: {
+            'discovered_at': 'original timestamp', 'sha256': 'original hash',
+            'referring_pages': [prior],
+        }}, 'scans': {}}
+        for _ in range(2):
+            with redirect_stdout(io.StringIO()):
+                site.scan(data, self.scope, 100)
+        saved = json.loads(self.inventory.read_text())['documents'][pdf]
+        self.assertEqual(saved['discovered_at'], 'original timestamp')
+        self.assertEqual(saved['sha256'], 'original hash')
+        self.assertEqual(saved['referring_pages'], [prior,
+            {'text': 'Course Plan', 'url': self.scope},
+            {'text': 'Course Plan', 'url': page},
+            {'text': 'Another title', 'url': page},
+            {'text': '', 'url': page},
+        ])
+
+    def test_redirects_and_base_urls_keep_the_actual_referring_page(self):
+        pdf = self.scope + 'reports/one.pdf'
+        page = self.scope + 'advising/'
+        self.routes[self.scope] = (
+            '<a href="alias">Plan</a><a href="page-alias">Advising</a>', 'text/html')
+        self.redirects[self.scope + 'page-alias'] = page
+        self.routes[page] = (
+            '<base href="../reports/">'
+            '<a href="one.pdf">Direct link</a>'
+            '<a href="../alias">Alias link</a>'
+            '<a href="../second-alias">Second alias</a>', 'text/html')
+        self.redirects[self.scope + 'second-alias'] = pdf
+        data = {'version': 1, 'documents': {}, 'scans': {}}
+        with redirect_stdout(io.StringIO()):
+            site.scan(data, self.scope, 100)
+        saved = json.loads(self.inventory.read_text())['documents']
+        self.assertEqual(list(saved), [pdf])
+        self.assertCountEqual(saved[pdf]['referring_pages'], [
+            {'text': 'Plan', 'url': self.scope},
+            {'text': 'Direct link', 'url': page},
+            {'text': 'Alias link', 'url': page},
+            {'text': 'Second alias', 'url': page},
+        ])
 
     def test_redirect_to_excluded_folder_is_rejected_before_request(self):
         target = self.scope + 'archive/secret.pdf'

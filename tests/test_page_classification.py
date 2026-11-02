@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from convert import convert_pdf, main, page_mode
-from page_classification import classify_page
+from page_classification import classify_page, page_signals
 from review import render_body
 
 
@@ -113,6 +113,37 @@ class PageClassificationTests(unittest.TestCase):
         self.assertNotIn('.svg', text)
         self.assertTrue((out / 'assets/page-1.svg').exists())
         self.assertIn('[SVG](../assets/page-1.svg)', (out / 'review/log.md').read_text())
+
+    def test_diagonal_connections_are_not_counted_as_enclosing_boxes(self):
+        page = self.doc.new_page(width=600, height=800)
+        diagram(page, connected=False)
+        for row in range(4):
+            for col in range(2):
+                x, y = 40 + col * 200, 40 + row * 180
+                page.draw_line((x + 110, y + 15), (x + 200, y + 45))
+        pdf = self.save()
+        with pymupdf.open(pdf) as doc, pdfplumber.open(pdf) as plumb:
+            page = doc[0]
+            signals = page_signals(page, page.get_text('dict')['blocks'], page.get_drawings(),
+                                   page.get_image_info(), plumb.pages[0].find_tables())
+        self.assertEqual(signals['shapes'], 12)
+        self.assertEqual(signals['connections'], 9)  # Eight diagonal, one horizontal.
+        self.assertEqual(self.decision(pdf), 'svg')
+        out = self.root / 'out'
+        convert_pdf(pdf, out)
+        self.assertIn('![Source page 1](assets/page-1.svg)', (out / 'content.md').read_text())
+
+    def test_unconnected_diagonal_rules_do_not_create_shapes_or_overlap(self):
+        page = self.doc.new_page(width=600, height=800)
+        for i in range(12):
+            y = 30 + i * 55
+            page.draw_line((40, y), (550, y + 40))
+            page.insert_text((200, y + 25), f'Ordinary label {i}')
+        signals = page_signals(page, page.get_text('dict')['blocks'], page.get_drawings(), [], [])
+        self.assertEqual(signals['shapes'], 0)
+        self.assertEqual(signals['connections'], 0)
+        self.assertEqual(signals['overlap'], 0)
+        self.assertEqual(self.decision(self.save()), 'markdown')
 
     def test_mixed_prose_and_diagram_keeps_markdown(self):
         page = self.doc.new_page(width=600, height=800)

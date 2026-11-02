@@ -8,6 +8,18 @@ ROOT = Path(__file__).resolve().parent
 DOWNLOADS = '1_downloads'
 PENDING = '2_pending_review'
 READY = '3_ready_to_publish'
+DIAGNOSTIC = 'diagnostic.md'
+
+
+def diagnostic_only(folder):
+    """Recognize the exact pre-conversion layout created by pdf diagnose."""
+    review = folder / 'review'
+    report = review / DIAGNOSTIC
+    return (not folder.is_symlink() and folder.is_dir()
+            and set(folder.iterdir()) == {review}
+            and not review.is_symlink() and review.is_dir()
+            and set(review.iterdir()) == {report}
+            and not report.is_symlink() and report.is_file())
 
 
 def document_markdown(path):

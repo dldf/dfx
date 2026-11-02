@@ -7,6 +7,8 @@ h1, h2, h3, h4 { line-height: 1.25; color: #162f43; overflow-wrap: anywhere; }
 h1 { font-size: 26px; }
 h2 { font-size: 22px; margin-top: 28px; }
 h3 { font-size: 19px; }
+h4.inline-heading { display: inline; font-size: inherit; line-height: inherit; color: inherit; font-weight: bold; margin: 0; }
+.inline-heading-paragraph { margin: 1em 0; }
 a { color: #075580; text-decoration: underline; overflow-wrap: anywhere; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: auto; }
 table.source-widths { table-layout: fixed; }

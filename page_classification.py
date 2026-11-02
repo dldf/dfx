@@ -1,7 +1,55 @@
 """Conservative page-layout heuristics, not semantic or accessibility analysis."""
 from statistics import median
+import operator
 
 import pymupdf
+
+
+# These checks drive both classification and the diagnostic report.
+# Each group passes when all (or any) of its individual checks pass.
+CHECK_GROUPS = (
+    ('scan', 'Likely scan', 'all', (
+        ('bitmap_coverage', 'Largest image coverage', '>=', .8),
+        ('characters', 'Extractable characters', '<', 30),
+        ('shapes', 'Substantial shapes', '<', 6))),
+    ('svg_common', 'SVG: shared requirements', 'all', (
+        ('coverage', 'Area spanned by shapes', '>=', .5),
+        ('aligned_prose', 'Aligned paragraph-length lines', '<', 3),
+        ('table', 'Strong evidence of a regular table', '==', False))),
+    ('labelled', 'SVG: labelled diagram', 'all', (
+        ('lines', 'Nonempty text lines after deduplication', '>=', 12),
+        ('short_labels', 'Short text labels', '>=', .65),
+        ('spread', 'Page regions containing text (out of 9)', '>=', 5),
+        ('overlap', 'Text inside shape bounds', '>=', .5),
+        ('shapes', 'Substantial shapes', '>=', 8),
+        ('connections', 'Recognized connections', '>=', 3))),
+    ('unlabelled', 'SVG: unlabelled artwork alternative', 'all', (
+        ('lines', 'Nonempty text lines after deduplication', '<=', 3),
+        ('shapes', 'Substantial shapes', '>=', 12),
+        ('curved_paths', 'Drawing paths containing curves', '>=', 8))),
+    ('uncertain_common', 'Uncertain layout: shared requirements', 'all', (
+        ('coverage', 'Area spanned by shapes', '>=', .4),
+        ('shapes', 'Substantial shapes', '>=', 6))),
+    ('uncertain_graphics', 'Uncertain layout: graphics alternatives', 'any', (
+        ('connections', 'Recognized connections', '>=', 1),
+        ('curved_paths', 'Drawing paths containing curves', '>=', 4))),
+    ('uncertain_text', 'Uncertain layout: text alternatives', 'any', (
+        ('short_labels', 'Short text labels', '>=', .5),
+        ('lines', 'Nonempty text lines after deduplication', '<=', 3))),
+)
+
+
+def classification_checks(signals):
+    comparisons = {'>=': operator.ge, '<': operator.lt, '<=': operator.le, '==': operator.eq}
+    groups = []
+    for key, title, combine, rules in CHECK_GROUPS:
+        checks = [dict(signal=signal, label=label, value=signals[signal],
+                       comparison=comparison, threshold=threshold,
+                       passed=comparisons[comparison](signals[signal], threshold))
+                  for signal, label, comparison, threshold in rules]
+        passed = (all if combine == 'all' else any)(check['passed'] for check in checks)
+        groups.append(dict(key=key, title=title, combine=combine, checks=checks, passed=passed))
+    return groups
 
 
 def page_signals(page, blocks, drawings, images, tables):
@@ -23,10 +71,12 @@ def page_signals(page, blocks, drawings, images, tables):
                       and 0 < abs(other.y0 - rect.y0) <= max(rect.height, other.height) * 1.8
                       for other in long_lines) for rect in long_lines)
 
-    # Thin rules and page backgrounds are not label boxes. Deduplication keeps
-    # repeated fills/strokes from inflating the evidence.
+    # A standalone diagonal line has a broad bounding rectangle but is not a
+    # label box. Keep the line for connection detection, not shape containment.
+    # Thin rules and page backgrounds are also excluded; repeated bounds dedupe.
     shapes = {tuple(round(v, 1) for v in d['rect']) for d in drawings
-              if d['rect'].width >= 8 and d['rect'].height >= 8
+              if not (len(d['items']) == 1 and d['items'][0][0] == 'l')
+              and d['rect'].width >= 8 and d['rect'].height >= 8
               and d['rect'].get_area() <= area * .15}
     shapes = [pymupdf.Rect(rect) for rect in shapes]
     connections = set()
@@ -82,24 +132,21 @@ def classify_page(page, blocks, drawings, images, tables):
     Thresholds are conservative starting points calibrated on assessment prose,
     assessment tables, and an advising diagram, not universal PDF rules.
     """
-    s = page_signals(page, blocks, drawings, images, tables)
-    if s['bitmap_coverage'] >= .8 and s['characters'] < 30 and s['shapes'] < 6:
+    return classify_signals(page_signals(page, blocks, drawings, images, tables))
+
+
+def classify_signals(s):
+    passed = {group['key']: group['passed'] for group in classification_checks(s)}
+    if passed['scan']:
         return 'scan', ('Likely scanned/image-only page: a bitmap covers most of the page with little '
                         'extractable text. This converter has no OCR stage; OCR or transcription is '
                         'required to determine and recover its text. Bitmap artwork is also possible.')
-    broad = s['coverage'] >= .5
-    labels = s['lines'] >= 12 and s['short_labels'] >= .65 and s['spread'] >= 5 and s['overlap'] >= .5
-    connected = s['shapes'] >= 8 and s['connections'] >= 3
-    # Unlabelled vector artwork also needs extensive, non-grid geometry.
-    unlabelled = s['lines'] <= 3 and s['shapes'] >= 12 and s['curved_paths'] >= 8
     reason = (f"{s['shapes']} substantial shapes, {s['connections']} connections between shapes, "
               f"{s['coverage']:.0%} composition coverage, {s['short_labels']:.0%} short text lines, "
               f"{s['overlap']:.0%} text/shape overlap; {s['aligned_prose']} aligned prose lines; "
               f"regular table evidence {'present' if s['table'] else 'absent'}")
-    if broad and ((labels and connected) or unlabelled) and s['aligned_prose'] < 3 and not s['table']:
+    if passed['svg_common'] and (passed['labelled'] or passed['unlabelled']):
         return 'svg', 'Likely diagram/artwork: ' + reason + '.'
-    if (s['coverage'] >= .4 and s['shapes'] >= 6
-            and (s['connections'] >= 1 or s['curved_paths'] >= 4)
-            and (s['short_labels'] >= .5 or s['lines'] <= 3)):
+    if passed['uncertain_common'] and passed['uncertain_graphics'] and passed['uncertain_text']:
         return 'uncertain', 'Uncertain page layout; Markdown retained: ' + reason + '.'
     return 'markdown', 'Text/table layout or insufficient evidence for whole-page artwork.'

@@ -134,6 +134,65 @@ def render_blank_rules(soup):
                 parent.decompose()
 
 
+def render_inline_headings(soup):
+    """Promote marked paragraphs' leading bold text without nesting h4 in p."""
+    block_tags = {'p', 'div', 'ul', 'ol', 'li', 'table', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'img'}
+    for comment in list(soup.find_all(string=lambda s: isinstance(s, Comment))):
+        match = re.fullmatch(r'\s*pdf2md-inline-heading: (\d+)\s*', str(comment))
+        if not match:
+            continue
+        container = comment.parent
+        comment.extract()
+        if container.name not in ('p', 'li'):
+            continue
+        text_nodes, has_block = [], False
+        for node in container.descendants:
+            if isinstance(node, Comment):
+                continue
+            if getattr(node, 'name', None) in block_tags:
+                has_block = True
+                break
+            if isinstance(node, str):
+                text_nodes.append(node)
+        prefix, last_bold = [], None
+        for node in text_nodes:
+            if node.strip() and node.find_parent('strong') is None:
+                break
+            prefix.append(str(node))
+            if node.strip():
+                last_bold = node
+        if last_bold is None:
+            continue
+        all_bold = not has_block and all(not node.strip() or node.find_parent('strong')
+                                         for node in text_nodes)
+        if all_bold:
+            qualifies = int(match[1]) == 1
+        else:
+            qualifies = 1 <= len(''.join(prefix).split()) <= 10
+        if not qualifies:
+            continue
+        boundary = soup.new_tag('span')
+        last_bold.insert_after(boundary)
+        # Split any inline wrappers at the end of the heading, keeping their
+        # formatting and links on both sides of the split.
+        while boundary.parent is not container:
+            parent = boundary.parent
+            after = soup.new_tag(parent.name, attrs=dict(parent.attrs))
+            for sibling in list(boundary.next_siblings):
+                after.append(sibling.extract())
+            parent.insert_after(boundary.extract())
+            if after.contents:
+                after.attrs.pop('id', None)
+                boundary.insert_after(after)
+        heading = soup.new_tag('h4', attrs={'class': 'inline-heading'})
+        for sibling in reversed(list(boundary.previous_siblings)):
+            heading.append(sibling.extract())
+        boundary.replace_with(heading)
+        if container.name == 'p':
+            container.name = 'div'
+            container['class'] = container.get('class', []) + ['inline-heading-paragraph']
+
+
 def render_body(markdown, folder, description_ids, continuation_indent=0):
     # Render lists without standalone anchors, then restore the anchors in the
     # HTML. An otherwise empty anchor paragraph can change spacing or nesting.
@@ -154,6 +213,7 @@ def render_body(markdown, folder, description_ids, continuation_indent=0):
     result = subprocess.run(['pandoc', '--from=markdown+raw_html+fancy_lists+startnum-smart-implicit_figures', '--to=html5'],
                             input=markdown, capture_output=True, text=True, check=True)
     soup = BeautifulSoup(result.stdout, 'html.parser')
+    render_inline_headings(soup)
     render_blank_rules(soup)
     for number in reversed(anchors):
         anchor = soup.new_tag('a', id=f'source-page{number}')

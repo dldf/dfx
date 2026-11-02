@@ -153,6 +153,7 @@ def scan(data, scope, limit, *, folders=False):
     client = Client(scope, exclusions)
     queue, queued, seen = deque([scope]), {scope}, set()
     errors, outside, found = [], set(), set()
+    references, pdf_targets = {}, {}
     stamp = now()
     while queue and len(seen) < limit:
         url = queue.popleft()
@@ -178,6 +179,8 @@ def scan(data, scope, limit, *, folders=False):
                         entry = data['documents'].setdefault(final, {'discovered_at': stamp})
                         length = response.headers.get('Content-Length', '')
                         entry.update({'last_seen': stamp, 'size_bytes': int(length) if length.isdigit() else None})
+                        entry.setdefault('referring_pages', [])
+                        pdf_targets[url] = pdf_targets[final] = final
                     found.add(final)
                     if not folders:
                         print(f'Found PDF: {final}', flush=True)
@@ -201,6 +204,12 @@ def scan(data, scope, limit, *, folders=False):
                         continue
                     if excluded(target, exclusions):
                         continue
+                    if not folders:
+                        text = ' '.join(link.get_text().split()) if link.name == 'a' else ''
+                        reference = {'text': text, 'url': final}
+                        target_references = references.setdefault(target, [])
+                        if reference not in target_references:
+                            target_references.append(reference)
                     if target not in queued and target not in seen:
                         queue.append(target)
                         queued.add(target)
@@ -219,6 +228,16 @@ def scan(data, scope, limit, *, folders=False):
         for folder, count in sorted(counts.items()):
             print(f'{folder:<{width}}  {count:>4}')
     else:
+        # Collect after crawling: a referring page may be visited after its PDF,
+        # and an extensionless link may only reveal its PDF target on redirect.
+        for target, target_references in references.items():
+            final = pdf_targets.get(target)
+            if final is None:
+                continue
+            stored = data['documents'][final]['referring_pages']
+            for reference in target_references:
+                if reference not in stored:
+                    stored.append(reference)
         data['scans'][scope] = {'scanned_at': stamp, 'visited': len(seen), 'pdfs_found': len(found),
                                'limited': bool(queue), 'errors': errors, 'outside_pdfs': sorted(outside)}
         save(data)
