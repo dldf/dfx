@@ -10,9 +10,9 @@ import tempfile
 import pdfplumber
 import pymupdf
 
-from convert import extract_page_inputs
-from page_classification import classification_checks, classify_signals, page_signals
-from workflow import DIAGNOSTIC, PENDING, conversion_destination
+from .convert import extract_page_inputs
+from .page_classification import classification_checks, classify_signals, page_signals
+from .workflow import DIAGNOSTIC, PENDING, conversion_destination
 
 
 def measurement(key, value):

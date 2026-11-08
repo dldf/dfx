@@ -11,8 +11,7 @@ from unittest.mock import patch
 
 import pymupdf
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import review
+from dfx import review
 
 
 class ReviewSourceTests(unittest.TestCase):
@@ -22,7 +21,7 @@ class ReviewSourceTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.pdf = self.make_pdf('1_downloads/reports/report.v2.PDF', 'Original source')
         self.original = self.pdf.read_bytes()
-        self.markdown = self.root / '2_pending_review/reports/report.v2/content.md'
+        self.markdown = self.root / '2_review/reports/report.v2/content.md'
         self.markdown.parent.mkdir(parents=True)
         digest = hashlib.sha256(self.original).hexdigest()
         self.markdown.write_text(f'<!-- Source: report.v2.PDF; SHA-256: {digest} -->\n# Edited text')
@@ -52,15 +51,15 @@ class ReviewSourceTests(unittest.TestCase):
                 for path in self.markdown.parent.rglob('*') if path.is_file()}
 
     def test_expected_path_takes_priority_and_handles_dots_and_uppercase_extension(self):
-        self.copy_source('2_pending_review/elsewhere/report.v2.pdf')
+        self.copy_source('2_review/elsewhere/report.v2.pdf')
         with patch('builtins.input') as prompt:
             self.assertEqual(review.resolve_source(self.markdown), self.pdf)
         prompt.assert_not_called()
 
     def test_recursive_fallback_uses_hash_to_distinguish_same_name(self):
         self.pdf.unlink()
-        self.make_pdf('2_pending_review/a/report.v2.pdf', 'Wrong source')
-        matching = self.copy_source('2_pending_review/b/nested/report.v2.PDF')
+        self.make_pdf('2_review/a/report.v2.pdf', 'Wrong source')
+        matching = self.copy_source('2_review/b/nested/report.v2.PDF')
         with patch('builtins.input') as prompt:
             self.assertEqual(review.resolve_source(self.markdown), matching)
         prompt.assert_not_called()
@@ -68,27 +67,27 @@ class ReviewSourceTests(unittest.TestCase):
     def test_mismatched_expected_pdf_does_not_override_matching_fallback(self):
         self.pdf.unlink()
         self.make_pdf('1_downloads/reports/report.v2.PDF', 'Wrong source')
-        matching = self.copy_source('2_pending_review/backup/report.v2.pdf')
+        matching = self.copy_source('2_review/backup/report.v2.pdf')
         self.assertEqual(review.resolve_source(self.markdown), matching)
 
     def test_identical_copies_are_unambiguous_with_hash(self):
         self.pdf.unlink()
-        first = self.copy_source('2_pending_review/a/report.v2.pdf')
-        self.copy_source('2_pending_review/b/report.v2.pdf')
+        first = self.copy_source('2_review/a/report.v2.pdf')
+        self.copy_source('2_review/b/report.v2.pdf')
         self.assertEqual(review.resolve_source(self.markdown), first)
 
     def test_legacy_markdown_without_hash_accepts_unique_source(self):
         self.markdown.write_text('# Legacy Markdown')
         self.assertEqual(review.resolve_source(self.markdown), self.pdf)
         self.pdf.unlink()
-        matching = self.copy_source('2_pending_review/backup/report.v2.pdf')
+        matching = self.copy_source('2_review/backup/report.v2.pdf')
         self.assertEqual(review.resolve_source(self.markdown), matching)
 
     def test_legacy_duplicates_prompt_instead_of_guessing(self):
         self.markdown.write_text('# Legacy Markdown')
         self.pdf.unlink()
-        self.copy_source('2_pending_review/a/report.v2.pdf')
-        chosen = self.copy_source('2_pending_review/b/report.v2.pdf')
+        self.copy_source('2_review/a/report.v2.pdf')
+        chosen = self.copy_source('2_review/b/report.v2.pdf')
         with patch.object(review.sys.stdin, 'isatty', return_value=True), \
                 patch('builtins.input', return_value=str(chosen)) as prompt:
             self.assertEqual(review.resolve_source(self.markdown), chosen)

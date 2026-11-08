@@ -2,7 +2,6 @@
 from contextlib import redirect_stdout
 from copy import deepcopy
 from email.message import Message
-import importlib.util
 import io
 import json
 from pathlib import Path
@@ -11,10 +10,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-spec = importlib.util.spec_from_file_location('discovery_site', Path(__file__).resolve().parents[1] / 'site.py')
-site = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(site)
+from dfx import site
 
 
 class Response(io.BytesIO):
@@ -33,7 +29,7 @@ class DiscoveryTests(unittest.TestCase):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.inventory = self.root / 'inventory.json'
+        self.inventory = self.root / 'data' / 'inventory.json'
         self.requests = []
         self.routes = {
             'https://example.edu/robots.txt': ('User-agent: *\nAllow: /', 'text/plain'),
@@ -89,6 +85,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_summary_counts_unique_final_urls_without_mutating_inventory(self):
         data = {'version': 1, 'documents': {'old': {}}, 'scans': {}}
         original = deepcopy(data)
+        self.inventory.parent.mkdir()
         self.inventory.write_text('existing inventory stays byte-for-byte intact')
         output = io.StringIO()
         with redirect_stdout(output), patch.object(site, 'save') as save:
@@ -113,12 +110,15 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse(self.inventory.exists())
 
     def test_normal_scan_still_saves_and_preserves_excluded_records(self):
+        self.assertFalse(self.inventory.parent.exists())
+        self.assertEqual(site.load(), {'version': 1, 'documents': {}, 'scans': {}})
         ignored = self.scope + 'archive/secret.pdf'
         data = {'version': 1, 'documents': {ignored: {'old': True}}, 'scans': {}}
         output = io.StringIO()
         with redirect_stdout(output):
             site.scan(data, self.scope, 100)
         saved = json.loads(self.inventory.read_text())
+        self.assertEqual(site.load(), saved)
         self.assertEqual(saved['documents'][ignored], {'old': True})
         self.assertEqual(saved['scans'][self.scope]['pdfs_found'], 4)
         self.assertIn('Found PDF:', output.getvalue())

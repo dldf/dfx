@@ -17,10 +17,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from urllib.robotparser import RobotFileParser
 
 from bs4 import BeautifulSoup
-from workflow import DOWNLOADS, PENDING, READY, document_present
+from .workflow import ROOT, DOWNLOADS, PENDING, READY, document_present
 
-ROOT = Path(__file__).resolve().parent
-INVENTORY = ROOT / 'inventory.json'
+INVENTORY = ROOT / 'data' / 'inventory.json'
 AGENT = 'pdf2md/1.0'
 STAGES = {'1': 'Downloaded', '2': 'Pending Review', '3': 'Ready to Publish'}
 
@@ -92,6 +91,7 @@ def load():
 
 def save(data):
     # Adapted from the archived catalog approach; replace atomically.
+    INVENTORY.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode='w', dir=INVENTORY.parent, delete=False, encoding='utf-8') as stream:
         temporary = Path(stream.name)
         json.dump(data, stream, indent=2, ensure_ascii=False)
@@ -330,7 +330,7 @@ def download(data, scope):
         return
     print('Documents present in any workflow folder or excluded by .pdfignore are skipped. Reported sizes may change.')
     if input(f'Download these PDFs into {DOWNLOADS}/? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Cancelled. No PDFs downloaded; scan results remain in inventory.json.')
+        print('Cancelled. No PDFs downloaded; scan results remain in data/inventory.json.')
         return
     client = Client(scope, exclusions)
     for url, entry in pending:
@@ -371,7 +371,7 @@ def download(data, scope):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, epilog='Tree status comes from files in the three workflow folders. Use stage.py to prepare a reviewed document for publication.')
+    parser = argparse.ArgumentParser(description=__doc__, epilog='Tree status comes from files in the three workflow folders. Use dfx stage to prepare a reviewed document for publication.')
     sub = parser.add_subparsers(dest='command', required=True)
     scanner = sub.add_parser('scan', help='Discover PDFs, show tree and ask before downloading')
     scanner.add_argument('url', help='URL folder, e.g. https://example.edu/department/')

@@ -7,9 +7,8 @@ import unittest
 import pymupdf
 from bs4 import BeautifulSoup
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from convert import convert_pdf, format_review_log
-from review import render_body
+from dfx.convert import convert_pdf, format_review_log
+from dfx.review import render_body
 
 
 class ReviewLogTests(unittest.TestCase):
@@ -71,7 +70,7 @@ class ReviewLogTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             pdf = root / '1_downloads' / 'A report.pdf'
-            markdown = root / '2_pending_review' / 'A report' / 'content.md'
+            markdown = root / '2_review' / 'A report' / 'content.md'
             log = format_review_log(pdf, markdown, 4, {4: ['Check A | B <label>.', 'Check A | B <label>.']})
             self.assertIn('[original.PDF](../../../1_downloads/A%20report.pdf)', log)
             self.assertIn('[content.MD](../content.md)', log)

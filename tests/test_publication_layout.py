@@ -7,10 +7,9 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import stage
-import review
-from workflow import document_present
+from dfx import stage
+from dfx import review
+from dfx.workflow import document_present
 
 
 class PublicationLayoutTests(unittest.TestCase):
@@ -18,8 +17,8 @@ class PublicationLayoutTests(unittest.TestCase):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        self.source = self.root / '2_pending_review/reports/sample'
-        self.destination = self.root / '3_ready_to_publish/reports/sample'
+        self.source = self.root / '2_review/reports/sample'
+        self.destination = self.root / '3_publish/reports/sample'
         self.source.mkdir(parents=True)
         (self.source / 'assets').mkdir()
         (self.source / 'assets/main.css').write_text('body { color: black; }')
@@ -71,7 +70,7 @@ class PublicationLayoutTests(unittest.TestCase):
             if Path(source).name == 'log.md':
                 raise OSError('disk full')
             return copy(source, target, **kwargs)
-        with patch('stage.shutil.copy2', side_effect=fail), self.assertRaisesRegex(RuntimeError, 'Copy failed'):
+        with patch('dfx.stage.shutil.copy2', side_effect=fail), self.assertRaisesRegex(RuntimeError, 'Copy failed'):
             self.run_stage()
         self.assert_originals_unchanged()
         self.assertFalse(self.destination.exists())
@@ -83,7 +82,7 @@ class PublicationLayoutTests(unittest.TestCase):
             if Path(source).name == 'log.md':
                 Path(target).write_text('Lost notes')
             return result
-        with patch('stage.shutil.copy2', side_effect=corrupt), self.assertRaisesRegex(RuntimeError, 'did not match'):
+        with patch('dfx.stage.shutil.copy2', side_effect=corrupt), self.assertRaisesRegex(RuntimeError, 'did not match'):
             self.run_stage()
         self.assert_originals_unchanged()
         self.assertFalse(self.destination.exists())
@@ -95,14 +94,14 @@ class PublicationLayoutTests(unittest.TestCase):
             if Path(source).name == 'log.md':
                 Path(source).write_text('New notes during staging')
             return result
-        with patch('stage.shutil.copy2', side_effect=change), self.assertRaisesRegex(RuntimeError, 'changed during verification'):
+        with patch('dfx.stage.shutil.copy2', side_effect=change), self.assertRaisesRegex(RuntimeError, 'changed during verification'):
             self.run_stage()
         self.assertEqual((self.source / 'review/log.md').read_text(), 'New notes during staging')
         self.assertTrue(self.markdown.is_file())
         self.assertFalse(self.destination.exists())
 
     def test_link_relocation_failure_preserves_originals(self):
-        with patch('stage.relocate_links', side_effect=ValueError('invalid link')), \
+        with patch('dfx.stage.relocate_links', side_effect=ValueError('invalid link')), \
                 self.assertRaisesRegex(RuntimeError, 'Copy failed'):
             self.run_stage()
         self.assert_originals_unchanged()
@@ -124,7 +123,7 @@ class PublicationLayoutTests(unittest.TestCase):
         self.assertFalse(document_present(self.destination))
 
     def test_receipt_failure_preserves_ready_copy_and_originals(self):
-        with patch('stage.write_receipt', side_effect=OSError('permission denied')), \
+        with patch('dfx.stage.write_receipt', side_effect=OSError('permission denied')), \
                 self.assertRaisesRegex(RuntimeError, 'Ready copy is complete'):
             self.run_stage()
         self.assert_originals_unchanged()
@@ -136,7 +135,7 @@ class PublicationLayoutTests(unittest.TestCase):
             if Path(path) == self.source / 'review':
                 raise OSError('review folder locked')
             return remove(path, *args, **kwargs)
-        with patch('stage.shutil.rmtree', side_effect=fail), self.assertRaisesRegex(RuntimeError, 'Cleanup was interrupted'):
+        with patch('dfx.stage.shutil.rmtree', side_effect=fail), self.assertRaisesRegex(RuntimeError, 'Cleanup was interrupted'):
             self.run_stage()
         self.assert_ready()
         self.assertTrue((self.source / 'review/log.md').is_file())

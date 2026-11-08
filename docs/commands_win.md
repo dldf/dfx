@@ -15,7 +15,7 @@ Activate the Environment (if needed). Run from the project root in each new Powe
 ```
 dfx convert "1_downloads\document.pdf"
 ```
-Converts the example PDF into `2_pending_review/document/`. Run from the project root. Existing document folders are never overwritten.\
+Converts the example PDF into `2_review/document/`. Run from the project root. Existing document folders are never overwritten.\
 After success, the terminal prints the review command for copying and pasting; it does not run it automatically.
 
 To convert all PDFs in the input directory, use:
@@ -27,18 +27,18 @@ dfx convert "1_downloads"
 ## Rebuild Preview 🔍
 
 ```
-dfx review "2_pending_review\document" --inspect
+dfx review "2_review\document" --inspect
 ```
 Creates PNG and HTML previews from the document folder. Run this from the project root after editing the MD to see new PNGs and index.html; leaves MD unchanged. Styling is linked from assets/main.css. (`--inspect` at the end is optional; it opens the new HTML in your browser.)
 
-The source PDF is found from the matching path under `1_downloads/`, then by filename under `2_pending_review/`, using the recorded hash when available. If it cannot be identified, enter its path at the prompt, or press Enter on a blank line or Ctrl+C to cancel before any files change.
+The source PDF is found from the matching path under `1_downloads/`, then by filename under `2_review/`, using the recorded hash when available. If it cannot be identified, enter its path at the prompt, or press Enter on a blank line or Ctrl+C to cancel before any files change.
 
 After successful review, the terminal prints the stage command for copying and pasting; it does not run it automatically.
 
 ## Stage for Publication 🚀
 
 ```
-dfx stage "2_pending_review\document"
+dfx stage "2_review\document"
 ```
 
 After the conversion has been reviewed and edited (if necessary) by a human, it is ready to be published. This command moves the new files to a publication folder. From there they may be uploaded to a web server.
@@ -78,7 +78,7 @@ dfx site scan "https://example.edu/department/" --folders --max-urls 100
 This lists only folders containing PDFs found during this scan, with a count for
 each folder. Each unique PDF URL counts once in its immediate folder, not in
 parent folders. It does not print individual PDF URLs or a status tree, save or
-change `inventory.json`, or offer downloads. It works without an inventory file.
+change `data/inventory.json`, or offer downloads. It works without an inventory file.
 The scan still follows links; limits, excluded folders, and inaccessible pages can
 make the listing incomplete. Run a normal scan later to save results for downloading.
 
@@ -110,7 +110,7 @@ excluded beyond the existing scope and `robots.txt` rules.
 | --- | --- | --- |
 | Show latest scan’s status tree | `dfx site tree` | Shows workflow status based on local files. |
 | Show this scope’s status tree | `dfx site tree "https://example.edu/department/"` | Shows this website folder. |
-| Mark reviewed and prepare for publication | `dfx stage "2_pending_review\document"` | Prompts for your name, stages index.html and assets in 3_ready_to_publish/, archives Markdown and log in assets/_pdf2md/, and removes review/. Leaves a dated receipt. Does not rebuild HTML. |
+| Mark reviewed and prepare for publication | `dfx stage "2_review\document"` | Prompts for your name, stages index.html and assets in 3_publish/, archives Markdown and log in assets/_pdf2md/, and removes review/. Leaves a dated receipt. Does not rebuild HTML. |
 | Show conversion help | `dfx convert --help` | Lists conversion options. |
 | Show review help | `dfx review --help` | Lists review options. |
 | Show website command help | `dfx site --help` | Lists website commands. |
@@ -118,9 +118,9 @@ excluded beyond the existing scope and `robots.txt` rules.
 | Show verification help | `dfx stage --help` | Lists verification options. Custom output locations are outside the tracked workflow. |
 | Run regression tests | `python -m unittest discover -s tests -q` | Checks converter and preview behavior. |
 
-The tree tracks file presence automatically: **[1] Downloaded** in `1_downloads/`, **[2] Pending Review** in `2_pending_review/`, and **[3] Ready to Publish** in `3_ready_to_publish/`. New ready documents require `index.html`, `assets/main.css`, and both archived Markdown files. Legacy root-level Markdown remains recognized. The highest stage present wins. Discovered URLs without local files are unnumbered and marked “not downloaded.” Custom output locations are outside this tracked workflow.
+The tree tracks file presence automatically: **[1] Downloaded** in `1_downloads/`, **[2] Pending Review** in `2_review/`, and **[3] Ready to Publish** in `3_publish/`. New ready documents require `index.html`, `assets/main.css`, and both archived Markdown files. Legacy root-level Markdown remains recognized. The highest stage present wins. Discovered URLs without local files are unnumbered and marked “not downloaded.” Custom output locations are outside this tracked workflow.
 
-For documents in `2_pending_review/`, run the verification command after human review. It prompts for your name and records the date/time. HTML and assets are copied and checked before originals are removed. The staged folder contains only `index.html` and `assets/`; `content.md` and `review/log.md` are archived in `assets/_pdf2md/` with relative links updated. HTML is not rebuilt. The remaining `review/` files are deleted after success. A two-line `ready_to_publish.txt` receipt stays in the pending document folder with your review record and a link to the ready folder. Existing destinations are never overwritten. Refresh the preview before verification if you edited the Markdown.
+For documents in `2_review/`, run the verification command after human review. It prompts for your name and records the date/time. HTML and assets are copied and checked before originals are removed. The staged folder contains only `index.html` and `assets/`; `content.md` and `review/log.md` are archived in `assets/_pdf2md/` with relative links updated. HTML is not rebuilt. The remaining `review/` files are deleted after success. A two-line `ready_to_publish.txt` receipt stays in the pending document folder with your review record and a link to the ready folder. Existing destinations are never overwritten. Refresh the preview before verification if you edited the Markdown.
 
 ## Command Usage Instructions 📓
 

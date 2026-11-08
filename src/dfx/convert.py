@@ -17,9 +17,9 @@ import pdfplumber
 import pymupdf
 from bs4 import BeautifulSoup
 
-from review import find_chrome, preview, render_inline_headings
-from page_classification import classify_page
-from workflow import PENDING, conversion_destination, diagnostic_only, next_command
+from .review import find_chrome, preview, render_inline_headings
+from .page_classification import classify_page
+from .workflow import PENDING, conversion_destination, diagnostic_only, next_command
 
 
 def clean(text):

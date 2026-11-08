@@ -2,10 +2,10 @@
 __pycache__/
 *.egg-info/
 .DS_Store
-inventory.json
+/data/inventory.json
 1_downloads/
-2_pending_review/
-3_ready_to_publish/
+2_review/
+3_publish/
 .pdfignore
 /worklog.md
 /z*

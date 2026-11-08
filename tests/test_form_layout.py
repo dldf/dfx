@@ -9,9 +9,8 @@ from bs4 import BeautifulSoup
 import pdfplumber
 import pymupdf
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from convert import convert_pdf, grid_or_html
-from review import document_title, ensure_document_heading, render_body
+from dfx.convert import convert_pdf, grid_or_html
+from dfx.review import document_title, ensure_document_heading, render_body
 
 
 class FormLayoutTests(unittest.TestCase):
@@ -91,7 +90,7 @@ class FormLayoutTests(unittest.TestCase):
                     page.insert_text((235, 155), 'Keep: ___')
                     document.save(source)
                 renderer = (lambda html: (html, 'HTML')) if form == 'HTML' else grid_or_html
-                with patch('convert.grid_or_html', side_effect=renderer):
+                with patch('dfx.convert.grid_or_html', side_effect=renderer):
                     convert_pdf(source, output)
                 markdown = (output / 'content.md').read_text()
                 soup = BeautifulSoup(render_body(markdown, output, set()), 'html.parser')

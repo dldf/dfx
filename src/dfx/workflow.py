@@ -4,10 +4,18 @@ import os
 import shlex
 import subprocess
 
-ROOT = Path(__file__).resolve().parent
+def project_root():
+    """Use the checkout for editable installs, or the working directory otherwise."""
+    source = Path(__file__).resolve().parent.parent
+    if source.name == 'src' and (source.parent / 'pyproject.toml').is_file():
+        return source.parent
+    return Path.cwd().resolve()
+
+
+ROOT = project_root()
 DOWNLOADS = '1_downloads'
-PENDING = '2_pending_review'
-READY = '3_ready_to_publish'
+PENDING = '2_review'
+READY = '3_publish'
 DIAGNOSTIC = 'diagnostic.md'
 
 

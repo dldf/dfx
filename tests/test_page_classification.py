@@ -11,10 +11,9 @@ import pdfplumber
 import pymupdf
 from bs4 import BeautifulSoup
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from convert import convert_pdf, main, page_mode
-from page_classification import classify_page, page_signals
-from review import render_body
+from dfx.convert import convert_pdf, main, page_mode
+from dfx.page_classification import classify_page, page_signals
+from dfx.review import render_body
 
 
 def diagram(page, connected=True):
@@ -222,8 +221,8 @@ class PageClassificationTests(unittest.TestCase):
         pdf = self.save()
         self.assertEqual(self.decision(pdf), 'markdown')
         args = ['convert.py', str(pdf), str(self.root / 'out'), '--page-mode', '1=svg']
-        with patch.object(sys, 'argv', args), patch('convert.find_chrome', return_value='chrome'), \
-                patch('convert.preview') as preview, patch('sys.stdout'):
+        with patch.object(sys, 'argv', args), patch('dfx.convert.find_chrome', return_value='chrome'), \
+                patch('dfx.convert.preview') as preview, patch('sys.stdout'):
             self.assertEqual(main(), 0)
         out = self.root / 'out/source'
         preview.assert_called_once_with(pdf, out / 'content.md', 'chrome')

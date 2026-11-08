@@ -4,6 +4,7 @@ import argparse
 from contextlib import nullcontext
 import hashlib
 from html import escape
+from importlib.resources import files
 import json
 import math
 from pathlib import Path
@@ -18,7 +19,7 @@ from urllib.parse import quote, unquote, urlsplit
 from bs4 import BeautifulSoup, Comment
 import pymupdf
 
-from workflow import ROOT, DOWNLOADS, PENDING, document_markdown, html_name, next_command
+from .workflow import ROOT, DOWNLOADS, PENDING, document_markdown, html_name, next_command
 
 
 def latex_sources(source):
@@ -129,7 +130,7 @@ def document_css(source):
                 raise ValueError('Markdown font must be serif or sans.')
             font = value
     family = '"Times New Roman", Times, serif' if font == 'serif' else 'system-ui, sans-serif'
-    return Path(__file__).with_name('review.css').read_text() + f'\nbody {{ font-family: {family}; }}\n'
+    return files('dfx').joinpath('review.css').read_text(encoding='utf-8') + f'\nbody {{ font-family: {family}; }}\n'
 
 
 def render_blank_rules(soup):

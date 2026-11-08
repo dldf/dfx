@@ -76,9 +76,16 @@ The install command reads dependencies from `pyproject.toml` and adds `dfx` to
 the environment. Existing users should run `python -m pip install -e .` once.
 The editable installation uses the code in this project folder.
 
-Existing commands such as `python convert.py "1_downloads/document.pdf"` and
-`python stage.py "2_pending_review/document/content.md"` still work with the
-same arguments and options.
+Application code lives in `src/dfx/`; tests remain in `tests/`. Run commands
+from the project folder so relative input and output paths use that folder.
+Editable installations also use this checkout for inventory and workflow tracking;
+regular installations use the working directory. The stylesheet is bundled with
+the package.
+
+Use `dfx convert "1_downloads/document.pdf"` and
+`dfx stage "2_review/document/content.md"` in place of the former
+`python convert.py` and `python stage.py` commands, with the same arguments
+and options.
 
 ## Convert a PDF
 
@@ -89,7 +96,7 @@ Quote paths containing spaces. From the project folder, run:
 dfx convert "1_downloads/document.pdf"
 ```
 
-This creates `2_pending_review/document/` containing:
+This creates `2_review/document/` containing:
 
 | Path | Purpose |
 | --- | --- |
@@ -108,9 +115,9 @@ Styles are linked from `assets/main.css`; inline style attributes are retained.
 After each successful conversion, the terminal prints a `dfx review` command to
 copy and paste. It does not wait for confirmation or run the next step.
 A folder input converts
-PDFs recursively. The default output root is `2_pending_review/`. Converting a
+PDFs recursively. The default output root is `2_review/`. Converting a
 PDF or subfolder within `1_downloads/` preserves its path relative to that root
-when writing to `2_pending_review/`, so single and batch conversions agree.
+when writing to `2_review/`, so single and batch conversions agree.
 Existing document folders are protected from overwriting; choose a custom output
 root for another conversion. Custom roots are outside automatic status tracking.
 If preview generation fails after extraction, the saved Markdown remains available.
@@ -128,7 +135,7 @@ For a single PDF, override individual pages using 1-based page numbers:
 
 ```sh
 dfx convert "1_downloads/document.pdf" --page-mode 1=svg
-dfx convert "1_downloads/document.pdf" "2_pending_review/retry" --page-mode 1=markdown --page-mode 3=svg
+dfx convert "1_downloads/document.pdf" "2_review/retry" --page-mode 1=markdown --page-mode 3=svg
 ```
 
 Modes are `auto` (the default), `markdown` (the existing extraction path), and
@@ -181,22 +188,22 @@ page lists what to check, with links to the source PDF page and the Markdown pag
 A flag means the converter found something that needs human review; it does not
 necessarily mean the conversion is wrong.
 
-Edit `2_pending_review/document/content.md`, then refresh the preview:
+Edit `2_review/document/content.md`, then refresh the preview:
 
 ```sh
-dfx review "2_pending_review/document/"
+dfx review "2_review/document/"
 ```
 
 On Windows, include the browser path again:
 
 ```powershell
-dfx review "2_pending_review/document/" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
+dfx review "2_review/document/" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
 
 The review command locates the original PDF under `1_downloads/` using the
 matching document path. If that does not identify the source, it searches
-`2_pending_review/` recursively for PDFs with the document folder's name.
-For example, `2_pending_review/reports/file/content.md` matches
+`2_review/` recursively for PDFs with the document folder's name.
+For example, `2_review/reports/file/content.md` matches
 `1_downloads/reports/file.pdf`. PDF extensions such as `.PDF` are also supported.
 The recorded source hash validates candidates and distinguishes different PDFs
 with the same name. Without a hash, multiple matches require your input.
@@ -208,13 +215,12 @@ before any review files are changed. Noninteractive runs stop with an error when
 a path is needed. Custom or renamed document folders may require the prompt.
 There is no `--source` option.
 
-You can also run `python review.py "2_pending_review/document/"`.
-This replaces the old `python preview.py PDF MARKDOWN` command.
+Use `dfx review` in place of the former `python review.py` command.
 
 Folder arguments select the `content.md` inside that document folder; explicit
 Markdown paths are also accepted. Review rebuilds HTML and paired images without
 editing Markdown or prompting for titles or image descriptions. After successful
-review of a document under `2_pending_review/`, the terminal prints the `dfx stage`
+review of a document under `2_review/`, the terminal prints the `dfx stage`
 command to copy and paste. It does not run staging automatically.
 
 Append `--inspect` to open the saved HTML, or open `index.html` yourself.
@@ -308,7 +314,7 @@ Downloads go under `1_downloads/<hostname>/<website-path>/`. Files already prese
 in the tracked workflow are skipped. Enter `y` to confirm downloading; Enter or
 `n` cancels.
 
-Scan results and download metadata are saved in local `inventory.json`. That file,
+Scan results and download metadata are saved in local `data/inventory.json`. That file,
 new PDF downloads, generated documents, and virtual environments are excluded from Git.
 Existing inventory status fields are ignored; old history may remain for reference.
 
@@ -321,7 +327,7 @@ dfx site scan "https://example.edu/department/" --folders --max-urls 100
 This lists only folders containing PDFs found during this scan, with a count for
 each folder. Each unique PDF URL counts once in its immediate folder, not in
 parent folders. It does not print individual PDF URLs or a status tree, save or
-change `inventory.json`, or offer downloads. It works without an inventory file.
+change `data/inventory.json`, or offer downloads. It works without an inventory file.
 The scan still follows links; limits, excluded folders, and inaccessible pages can
 make the listing incomplete. Run a normal scan later to save results for downloading.
 
@@ -356,25 +362,25 @@ dfx site tree
 | Status | Determined by file presence |
 | --- | --- |
 | [1] Downloaded | PDF in `1_downloads/`, with no matching Markdown in later stages |
-| [2] Pending Review | Markdown in the matching `2_pending_review/` document folder, but none in ready |
-| [3] Ready to Publish | `index.html`, `assets/main.css`, and both archived Markdown files in the matching `3_ready_to_publish/` folder; legacy root-level Markdown remains recognized |
+| [2] Pending Review | Markdown in the matching `2_review/` document folder, but none in ready |
+| [3] Ready to Publish | `index.html`, `assets/main.css`, and both archived Markdown files in the matching `3_publish/` folder; legacy root-level Markdown remains recognized |
 
 The highest stage present wins. A folder or receipt alone does not establish a
 stage. URLs discovered without local files appear unnumbered as “not downloaded.”
 There are no manual status commands. Custom output roots remain usable for conversion,
-but are outside automatic status tracking and `stage.py`.
+but are outside automatic status tracking and `dfx stage`.
 
 ## Prepare a reviewed document for publication
 
 Refresh and inspect the preview after your final Markdown edits, then run:
 
 ```sh
-dfx stage "2_pending_review/document/"
+dfx stage "2_review/document/"
 ```
 
 The command prompts for your name; the local date, time, and UTC offset are generated.
 For new conversions, it copies the reviewed files into the matching folder under
-`3_ready_to_publish/` with this layout:
+`3_publish/` with this layout:
 
 ```text
 document/
@@ -400,7 +406,7 @@ pending document folder:
 
 ```text
 Reviewed by "NAME"; on "YYYY-MM-DD" at "HH:MM:SS UTC_OFFSET".
-file:///absolute/path/to/3_ready_to_publish/document/
+file:///absolute/path/to/3_publish/document/
 ```
 
 Missing required files, blank names, existing receipts, and destination conflicts stop

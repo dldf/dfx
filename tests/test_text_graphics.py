@@ -7,9 +7,8 @@ import unittest
 import pymupdf
 from bs4 import BeautifulSoup
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from convert import bullet_details, convert_pdf
-from review import render_body
+from dfx.convert import bullet_details, convert_pdf
+from dfx.review import render_body
 
 
 class TextGraphicsTests(unittest.TestCase):

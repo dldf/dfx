@@ -7,9 +7,8 @@ import unittest
 from bs4 import BeautifulSoup
 import pymupdf
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from convert import convert_pdf
-from review import render_body
+from dfx.convert import convert_pdf
+from dfx.review import render_body
 
 
 class TableHeaderTests(unittest.TestCase):

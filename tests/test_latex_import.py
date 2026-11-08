@@ -9,9 +9,8 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 import pymupdf
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import convert
-import review
+from dfx import convert
+from dfx import review
 
 
 class LatexImportTests(unittest.TestCase):
@@ -21,7 +20,7 @@ class LatexImportTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.tex = self.root / '1_downloads/latex/sample.tex'
         self.tex.parent.mkdir(parents=True)
-        self.destination = self.root / '2_pending_review/latex/sample'
+        self.destination = self.root / '2_review/latex/sample'
         self.markdown = self.destination / 'content.md'
 
     def write_tex(self, body):

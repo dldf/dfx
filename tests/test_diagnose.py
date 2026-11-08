@@ -10,13 +10,12 @@ from unittest.mock import patch
 import pdfplumber
 import pymupdf
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from convert import convert_pdf, extract_page_inputs
-from diagnose import diagnose_pdf, diagnostic_report, main, page_report
-from page_classification import classify_page
-from stage import verify_document
+from dfx.convert import convert_pdf, extract_page_inputs
+from dfx.diagnose import diagnose_pdf, diagnostic_report, main, page_report
+from dfx.page_classification import classify_page
+from dfx.stage import verify_document
 from test_page_classification import diagram
-from workflow import diagnostic_only, document_present
+from dfx.workflow import diagnostic_only, document_present
 
 
 class DiagnoseTests(unittest.TestCase):
@@ -26,7 +25,7 @@ class DiagnoseTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.pdf = self.root / '1_downloads/reports/sample.pdf'
         self.pdf.parent.mkdir(parents=True)
-        self.destination = self.root / '2_pending_review/reports/sample'
+        self.destination = self.root / '2_review/reports/sample'
         with pymupdf.open() as doc:
             page = doc.new_page()
             page.insert_text((50, 60), 'A plain document for diagnostic tests.')
@@ -90,9 +89,9 @@ class DiagnoseTests(unittest.TestCase):
     def test_cli_uses_conversion_paths_and_optional_output_root(self):
         for output in (None, self.root / 'custom'):
             arguments = ['diagnose.py', str(self.pdf), *([str(output)] if output else [])]
-            with patch('workflow.ROOT', self.root), patch.object(sys, 'argv', arguments), \
-                    patch('diagnose.diagnose_pdf') as diagnose, \
-                    patch('diagnose.PENDING', str(self.root / '2_pending_review')), \
+            with patch('dfx.workflow.ROOT', self.root), patch.object(sys, 'argv', arguments), \
+                    patch('dfx.diagnose.diagnose_pdf') as diagnose, \
+                    patch('dfx.diagnose.PENDING', str(self.root / '2_review')), \
                     redirect_stdout(io.StringIO()):
                 self.assertEqual(main(), 0)
             expected = output / 'sample' if output else self.destination

@@ -1,6 +1,5 @@
 """Short commands for the existing conversion, review, staging, and website scripts."""
 import argparse
-from pathlib import Path
 import subprocess
 import sys
 
@@ -12,9 +11,8 @@ def main(argv=None):
     parser.add_argument('command', choices=('convert', 'review', 'stage', 'diagnose', 'site'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER, help='Arguments passed to the selected script')
     args = parser.parse_args(argv)
-    script = Path(__file__).resolve().with_name(f'{args.command}.py')
     try:
-        return subprocess.run([sys.executable, str(script), *args.arguments]).returncode
+        return subprocess.run([sys.executable, '-m', f'dfx.{args.command}', *args.arguments]).returncode
     except KeyboardInterrupt:
         return 130
 

@@ -1,6 +1,7 @@
 """Check argument forwarding and compatibility with the original commands."""
 from pathlib import Path
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,10 +18,10 @@ class PdfCommandTests(unittest.TestCase):
             for arguments in (['--help'], [], ['--unknown-option']):
                 with self.subTest(command=command, arguments=arguments):
                     old = subprocess.run(
-                        [sys.executable, str(ROOT / f'{command}.py'), *arguments],
+                        [sys.executable, '-m', f'dfx.{command}', *arguments],
                         capture_output=True, text=True)
                     new = subprocess.run(
-                        [sys.executable, str(ROOT / 'pdf_cli.py'), command, *arguments],
+                        [sys.executable, '-m', 'dfx.pdf_cli', command, *arguments],
                         capture_output=True, text=True)
                     self.assertEqual(new.returncode, old.returncode)
                     self.assertEqual(new.stdout, old.stdout)
@@ -34,7 +35,7 @@ class PdfCommandTests(unittest.TestCase):
         for arguments, code in ((['--help'], 0), ([], 2), (['unknown'], 2)):
             with self.subTest(arguments=arguments):
                 result = subprocess.run(
-                    [sys.executable, str(ROOT / 'pdf_cli.py'), *arguments],
+                    [sys.executable, '-m', 'dfx.pdf_cli', *arguments],
                     capture_output=True, text=True)
                 self.assertEqual(result.returncode, code)
                 self.assertIn('convert', result.stdout + result.stderr)
@@ -46,9 +47,11 @@ class PdfCommandTests(unittest.TestCase):
     def test_arguments_input_working_directory_and_exit_code_survive(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            scripts = root / 'project with spaces'
-            scripts.mkdir()
-            shutil.copy2(ROOT / 'pdf_cli.py', scripts / 'pdf_cli.py')
+            package_root = root / 'project with spaces'
+            scripts = package_root / 'dfx'
+            scripts.mkdir(parents=True)
+            (scripts / '__init__.py').touch()
+            shutil.copy2(ROOT / 'src/dfx/pdf_cli.py', scripts / 'pdf_cli.py')
             script = (
                 'import json, os, sys\n'
                 'print(json.dumps([sys.argv[1:], sys.stdin.readline().strip(), '
@@ -60,8 +63,9 @@ class PdfCommandTests(unittest.TestCase):
                 with self.subTest(command=command):
                     (scripts / f'{command}.py').write_text(script)
                     result = subprocess.run(
-                        [sys.executable, str(scripts / 'pdf_cli.py'), command, *arguments],
-                        cwd=root, input='Test Reviewer\n', capture_output=True, text=True)
+                        [sys.executable, '-m', 'dfx.pdf_cli', command, *arguments],
+                        cwd=root, env={**os.environ, 'PYTHONPATH': str(package_root)},
+                        input='Test Reviewer\n', capture_output=True, text=True)
                     self.assertEqual(result.returncode, 7)
                     self.assertEqual(json.loads(result.stdout),
                                      [arguments, 'Test Reviewer', str(root), sys.executable])

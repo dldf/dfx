@@ -1,6 +1,5 @@
 """File-based states and safe publication transitions, using temporary documents."""
 from contextlib import redirect_stdout
-import importlib.util
 import io
 from pathlib import Path
 import shutil
@@ -9,13 +8,10 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import stage
-from workflow import DOWNLOADS, PENDING, READY, conversion_destination
+from dfx import stage
+from dfx.workflow import DOWNLOADS, PENDING, READY, conversion_destination
 
-spec = importlib.util.spec_from_file_location('pdf_site', Path(__file__).resolve().parents[1] / 'site.py')
-site = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(site)
+from dfx import site
 
 
 class WorkflowTests(unittest.TestCase):
@@ -146,7 +142,7 @@ class VerifyTests(unittest.TestCase):
         self.unchanged()
 
     def test_copy_failure_does_not_delete_originals(self):
-        with patch('stage.shutil.copy2', side_effect=OSError('disk full')), self.assertRaisesRegex(RuntimeError, 'originals and review files are unchanged'):
+        with patch('dfx.stage.shutil.copy2', side_effect=OSError('disk full')), self.assertRaisesRegex(RuntimeError, 'originals and review files are unchanged'):
             stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.unchanged()
         self.assertFalse(self.destination.exists())
@@ -159,14 +155,14 @@ class VerifyTests(unittest.TestCase):
             if Path(source).name == 'preview.html':
                 self.markdown.write_text('New edit while copying')
             return result
-        with patch('stage.shutil.copy2', side_effect=change), self.assertRaisesRegex(RuntimeError, 'changed during verification'):
+        with patch('dfx.stage.shutil.copy2', side_effect=change), self.assertRaisesRegex(RuntimeError, 'changed during verification'):
             stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.assertEqual(self.markdown.read_text(), 'New edit while copying')
         self.assertFalse(self.destination.exists())
         self.assertTrue((self.source / 'review/log.md').exists())
 
     def test_receipt_failure_leaves_ready_copy_and_all_originals(self):
-        with patch('stage.write_receipt', side_effect=OSError('permission denied')), self.assertRaisesRegex(RuntimeError, 'Ready copy is complete'):
+        with patch('dfx.stage.write_receipt', side_effect=OSError('permission denied')), self.assertRaisesRegex(RuntimeError, 'Ready copy is complete'):
             stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.unchanged()
         self.assertEqual(stage.snapshot(self.destination, 'content.md', 'frompdf.html'), self.before)
@@ -177,7 +173,7 @@ class VerifyTests(unittest.TestCase):
             if Path(path) == self.source / 'review':
                 raise PermissionError('review locked')
             return remove(path, *args, **kwargs)
-        with patch('stage.shutil.rmtree', side_effect=interrupt), self.assertRaisesRegex(RuntimeError, 'Cleanup was interrupted'):
+        with patch('dfx.stage.shutil.rmtree', side_effect=interrupt), self.assertRaisesRegex(RuntimeError, 'Cleanup was interrupted'):
             stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.assertEqual(stage.snapshot(self.destination, 'content.md', 'frompdf.html'), self.before)
         self.assertTrue((self.source / 'ready_to_publish.txt').is_file())

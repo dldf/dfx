@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Move a human-reviewed Markdown document into 3_ready_to_publish/; do not rebuild HTML."""
+"""Move a human-reviewed Markdown document into 3_publish/; do not rebuild HTML."""
 import argparse
 from datetime import datetime
 import hashlib
@@ -12,7 +12,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from bs4 import BeautifulSoup
 
-from workflow import ROOT, PENDING, READY, document_markdown, html_name
+from .workflow import ROOT, PENDING, READY, document_markdown, html_name
 
 
 def require_local(path, root):
@@ -253,7 +253,7 @@ def verify_document(markdown, reviewer=None, *, root=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('markdown', type=Path, help='Reviewed document folder (or Markdown file) under 2_pending_review/')
+    parser.add_argument('markdown', type=Path, help='Reviewed document folder (or Markdown file) under 2_review/')
     args = parser.parse_args()
     try:
         destination = verify_document(args.markdown)
