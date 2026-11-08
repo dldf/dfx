@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Save index.html beside Markdown and paired PNGs in review/; never edit Markdown."""
+"""Save HTML and PDF-page or LaTeX-document PNG previews; never edit Markdown."""
 import argparse
+from contextlib import nullcontext
 import hashlib
 from html import escape
 import json
@@ -20,6 +21,27 @@ import pymupdf
 from workflow import ROOT, DOWNLOADS, PENDING, document_markdown, html_name, next_command
 
 
+def latex_sources(source):
+    """Read and validate the separate LaTeX and optional comparison-PDF records."""
+    match = re.search(r'^<!-- pdf2md-latex: (.+) -->$', source, flags=re.M)
+    if match is None:
+        return None
+    records = json.loads(match[1])
+    if not isinstance(records, dict) or 'tex' not in records:
+        raise ValueError('Invalid LaTeX source record.')
+    for kind, record in records.items():
+        if kind not in ('tex', 'pdf') or not isinstance(record, dict):
+            raise ValueError('Invalid LaTeX source record.')
+        path = Path(record.get('path', ''))
+        if not path.is_absolute() or path.suffix.lower() != '.' + kind or not path.is_file():
+            raise ValueError(f'Original {kind.upper()} not found: {path}')
+        if hashlib.sha256(path.read_bytes()).hexdigest() != record.get('sha256'):
+            raise ValueError(f'Original {kind.upper()} changed since conversion: {path}')
+        if kind == 'pdf':
+            validate_source(path, record['sha256'])
+    return records
+
+
 def validate_source(pdf, digest):
     if pdf.suffix.lower() != '.pdf' or not pdf.is_file():
         raise ValueError(f'Choose an existing PDF file: {pdf}')
@@ -34,10 +56,13 @@ def validate_source(pdf, digest):
 
 
 def resolve_source(markdown, root=None):
-    """Find the original PDF before rendering, or ask for its location."""
+    """Validate recorded LaTeX sources or locate the original PDF before rendering."""
     root = (root or ROOT).resolve()
     markdown = markdown.resolve()
     source = markdown.read_text(encoding='utf-8')
+    records = latex_sources(source)
+    if records is not None:
+        return Path(records['tex']['path'])
     match = re.search(r'SHA-256: ([a-f0-9]{64})', source)
     digest = match[1] if match else None
     pending = root / PENDING
@@ -69,7 +94,7 @@ def resolve_source(markdown, root=None):
         return pdf
     if not sys.stdin.isatty():
         raise ValueError('Original PDF could not be identified automatically. '
-                         'Run pdf review in an interactive terminal to enter its path or cancel.')
+                         'Run dfx review in an interactive terminal to enter its path or cancel.')
     value = input('Original PDF not found or could not be identified.\n'
                   'Enter its path, or press Enter to cancel: ').strip()
     if not value:
@@ -194,6 +219,8 @@ def render_inline_headings(soup):
 
 
 def render_body(markdown, folder, description_ids, continuation_indent=0):
+    # Source paths are review bookkeeping, not part of the published HTML.
+    markdown = re.sub(r'^<!-- pdf2md-latex: .+ -->\s*', '', markdown, flags=re.M)
     # Render lists without standalone anchors, then restore the anchors in the
     # HTML. An otherwise empty anchor paragraph can change spacing or nesting.
     anchor_pattern = r'^[ \t]*<a id="source-page(\d+)"></a>[ \t]*$'
@@ -210,9 +237,21 @@ def render_body(markdown, folder, description_ids, continuation_indent=0):
         ancestors = [' ' * indent + '- <!-- pdf2md-list-continuation -->'
                      for indent in range(0, indentation, 4)]
         markdown = '\n'.join(ancestors) + '\n\n' + markdown
-    result = subprocess.run(['pandoc', '--from=markdown+raw_html+fancy_lists+startnum-smart-implicit_figures', '--to=html5'],
+    result = subprocess.run(['pandoc', '--from=markdown+raw_html+fancy_lists+startnum-smart-implicit_figures', '--to=html5', '--mathml'],
                             input=markdown, capture_output=True, text=True, check=True)
+    if 'Could not convert TeX math' in result.stderr:
+        raise ValueError('Pandoc could not render the Markdown cleanly: ' + result.stderr.strip())
     soup = BeautifulSoup(result.stdout, 'html.parser')
+    for heading in list(soup.select('h4.inline-heading')):
+        if 'inline-heading-paragraph' in heading.parent.get('class', []):
+            continue
+        following = heading.find_next_sibling()
+        wrapper = soup.new_tag('div', attrs={'class': 'inline-heading-paragraph'})
+        heading.wrap(wrapper)
+        if ('inline-heading-prefix' in heading.get('class', [])
+                and following is not None and following.name == 'p'):
+            wrapper.append(' ')
+            wrapper.append(following.extract())
     render_inline_headings(soup)
     render_blank_rules(soup)
     for number in reversed(anchors):
@@ -298,8 +337,12 @@ def ensure_document_heading(bodies, title):
 
 def preview(pdf, markdown, chrome, inspect=False):
     source = markdown.read_text(encoding='utf-8')
+    records = latex_sources(source)
+    latex = records is not None
+    if latex and Path(records['tex']['path']) != pdf.resolve():
+        raise ValueError('LaTeX source does not match the Markdown source record.')
     digest = re.search(r'SHA-256: ([a-f0-9]{64})', source)
-    if digest and digest[1] != hashlib.sha256(pdf.read_bytes()).hexdigest():
+    if not latex and digest and digest[1] != hashlib.sha256(pdf.read_bytes()).hexdigest():
         raise ValueError('This PDF does not match the source recorded in the Markdown.')
     parts = re.split(r'<!-- Source page (\d+) -->', source)
     page_indents = {int(match[2]): len(match[1]) for match in
@@ -309,15 +352,18 @@ def preview(pdf, markdown, chrome, inspect=False):
     inspection = markdown.parent / html_name(markdown.parent)
     external_css = inspection.name == 'index.html'
     title = document_title(markdown.parent.name)
-    with pymupdf.open(pdf) as document, tempfile.TemporaryDirectory(prefix='access-preview-') as tmp:
-        if [int(n) for n in parts[1::2]] != list(range(1, len(document) + 1)):
+    comparison = Path(records['pdf']['path']) if latex and 'pdf' in records else None
+    document_context = (pymupdf.open(comparison or pdf) if not latex or comparison else nullcontext(None))
+    with document_context as document, tempfile.TemporaryDirectory(prefix='access-preview-') as tmp:
+        if not latex and [int(n) for n in parts[1::2]] != list(range(1, len(document) + 1)):
             raise ValueError('Keep one <!-- Source page N --> marker per PDF page, in order.')
         work = Path(tmp)
         (work / 'main.css').write_text(css, encoding='utf-8')
         description_ids = set()
-        page_bodies = [render_body(parts[2 * number], markdown.parent, description_ids,
+        page_bodies = ([render_body(source, markdown.parent, description_ids)] if latex else
+                      [render_body(parts[2 * number], markdown.parent, description_ids,
                                   continuation_indent=page_indents.get(number, 0))
-                       for number in range(1, len(document) + 1)]
+                       for number in range(1, len(document) + 1)])
         page_bodies = ensure_document_heading(page_bodies, title)
         bodies = []
         browser = [chrome, '--headless', '--disable-gpu', '--hide-scrollbars',
@@ -331,15 +377,17 @@ def preview(pdf, markdown, chrome, inspect=False):
                 raise RuntimeError(f'Chrome could not render the preview: {result.stderr[-1200:]}')
             return result.stdout
 
-        for index, page in enumerate(document):
+        for index, page in enumerate([None] if latex else document):
             number = index + 1
-            width, height = math.ceil(page.rect.width * 1.5), math.ceil(page.rect.height * 1.5)
+            width, height = ((918, 1188) if latex else
+                             (math.ceil(page.rect.width * 1.5), math.ceil(page.rect.height * 1.5)))
             body = page_bodies[index]
-            bodies.append(f'<section aria-label="Source page {number}">{body}</section>')
+            label = 'Converted document' if latex else f'Source page {number}'
+            bodies.append(f'<section aria-label="{label}">{body}</section>')
             html = work / f'p{number:03d}.html'
             html.write_text(f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: data:; style-src file: 'unsafe-inline'; script-src 'nonce-preview-measure'">
-<title>Source page {number} — revised</title><link rel="stylesheet" href="main.css"></head>
+<title>{label} — revised</title><link rel="stylesheet" href="main.css"></head>
 <body style="width: {width}px"><main style="min-height: {height}px">{body}</main>
 <script nonce="preview-measure">window.addEventListener('load', () => {{
  document.documentElement.dataset.previewHeight = Math.ceil(document.querySelector('main').getBoundingClientRect().height);
@@ -350,7 +398,9 @@ def preview(pdf, markdown, chrome, inspect=False):
             if not dom.html or dom.html.get('data-broken-images') != '0':
                 raise RuntimeError(f'Page {number}: image loading or layout measurement failed.')
             full_height = max(height, int(dom.html['data-preview-height']))
-            revised = work / f'p{number:03d}-revised.png'
+            if latex and full_height > 30000:
+                raise ValueError('Document exceeds the 30,000-pixel PNG preview limit; split the LaTeX document before importing.')
+            revised = work / ('document-revised.png' if latex else f'p{number:03d}-revised.png')
             # Chrome's window can include browser chrome; leave extra room and
             # crop only the known blank space below the measured document.
             run_browser(f'--window-size={width},{full_height + 150}',
@@ -361,12 +411,18 @@ def preview(pdf, markdown, chrome, inspect=False):
             cropped = pymupdf.Pixmap(pix.colorspace, width, full_height,
                                      pix.samples[:pix.stride * full_height], pix.alpha)
             cropped.save(revised)
-            page.get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5)).save(work / f'p{number:03d}-original.png')
-            print(f'Page {number}/{len(document)} rendered.', flush=True)
+            if not latex:
+                page.get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5)).save(work / f'p{number:03d}-original.png')
+            print('Document rendered.' if latex else f'Page {number}/{len(document)} rendered.', flush=True)
+        if latex and document is not None:
+            for number, page in enumerate(document, 1):
+                page.get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5)).save(work / f'p{number:03d}-original.png')
+        if latex:
+            latex_sources(source)
         if markdown.read_text(encoding='utf-8') != source:
             raise ValueError('Markdown changed during rendering; rerun preview.')
         review.mkdir(exist_ok=True)
-        for png in work.glob('p*-*.png'):
+        for png in work.glob('*.png'):
             shutil.copyfile(png, review / png.name)
         if external_css:
             (markdown.parent / 'assets').mkdir(exist_ok=True)
@@ -383,12 +439,12 @@ def preview(pdf, markdown, chrome, inspect=False):
                               + str(content) + '</main></body></html>', encoding='utf-8')
         if inspect:
             webbrowser.open(inspection.as_uri())
-    print(f'Paired PNGs: {review}\nSaved HTML: {inspection}\nMarkdown unchanged.')
+    print(f'{"Document and comparison PNGs" if latex else "Paired PNGs"}: {review}\nSaved HTML: {inspection}\nMarkdown unchanged.')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('markdown', type=Path, help='Document folder (or Markdown file); the original PDF is located automatically')
+    parser.add_argument('markdown', type=Path, help='Document folder (or Markdown file); original PDF or LaTeX sources are located automatically')
     parser.add_argument('--inspect', action='store_true', help='Open the saved HTML in your browser')
     parser.add_argument('--chrome', help='Chrome executable used to generate the preview')
     args = parser.parse_args()

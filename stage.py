@@ -66,7 +66,7 @@ def check_html_assets(source):
             continue
         asset = (source / unquote(uri.path)).resolve()
         if uri.scheme or not asset.is_relative_to(source / 'assets') or not asset.is_file():
-            raise ValueError(f'HTML {kind} must exist under assets/: {reference}. Run pdf review first.')
+            raise ValueError(f'HTML {kind} must exist under assets/: {reference}. Run dfx review first.')
 
 
 def tree_snapshot(folder):
@@ -166,7 +166,7 @@ def verify_document(markdown, reviewer=None, *, root=None):
     original = snapshot(source, markdown.name, html, log_name)
     if modern:
         if 'assets/main.css' not in original:
-            raise ValueError('Required assets/main.css is missing. Run pdf review first.')
+            raise ValueError('Required assets/main.css is missing. Run dfx review first.')
         if (source / 'assets/_pdf2md').exists():
             raise FileExistsError('assets/_pdf2md is reserved for staged Markdown and the review log; nothing moved.')
     check_html_assets(source)

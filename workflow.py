@@ -12,7 +12,7 @@ DIAGNOSTIC = 'diagnostic.md'
 
 
 def diagnostic_only(folder):
-    """Recognize the exact pre-conversion layout created by pdf diagnose."""
+    """Recognize the exact pre-conversion layout created by dfx diagnose."""
     review = folder / 'review'
     report = review / DIAGNOSTIC
     return (not folder.is_symlink() and folder.is_dir()
@@ -38,7 +38,7 @@ def next_command(action, folder, chrome=None):
         folder = folder.relative_to(Path.cwd())
     except ValueError:
         pass
-    args = ['pdf', action, str(folder)]
+    args = ['dfx', action, str(folder)]
     if chrome:
         args.extend(['--chrome', chrome])
     return subprocess.list2cmdline(args) if os.name == 'nt' else shlex.join(args)

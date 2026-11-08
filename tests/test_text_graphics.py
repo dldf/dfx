@@ -106,14 +106,16 @@ class TextGraphicsTests(unittest.TestCase):
         self.assertIn('Before <mark>highlighted</mark> after.', markdown)
         self.assertEqual(images, [])
 
-    def test_highlight_preserves_bold_and_italic(self):
+    def test_highlight_preserves_heading_and_italic(self):
         self.page.draw_rect((70, 74, 160, 96), fill=(1, 1, 0), color=None)
         self.page.insert_text((72, 90), 'Emphasis', fontname='hebi', fontsize=14)
         markdown, _ = self.convert()
         soup = BeautifulSoup(render_body(markdown, self.root, set()), 'html.parser')
         marked = soup.select_one('mark')
         self.assertIsNotNone(marked)
-        self.assertIsNotNone(marked.select_one('strong em, em strong'))
+        self.assertIsNotNone(marked.find_parent('h4'))
+        self.assertIsNotNone(marked.select_one('em'))
+        self.assertIn('#### ', markdown)
         self.assertEqual(marked.get_text(), 'Emphasis')
 
     def test_pdf_highlight_annotation_is_text_not_png(self):

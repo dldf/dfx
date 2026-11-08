@@ -78,7 +78,13 @@ def excluded(url, folders):
 
 
 def load():
-    data = json.loads(INVENTORY.read_text())
+    try:
+        contents = INVENTORY.read_text()
+    except FileNotFoundError:
+        contents = ''
+    if not contents.strip():
+        return {'version': 1, 'scans': {}, 'documents': {}}
+    data = json.loads(contents)
     if data.get('version') != 1 or not isinstance(data.get('documents'), dict) or not isinstance(data.get('scans'), dict):
         raise ValueError('Expected inventory version 1 with documents and scans objects.')
     return data
@@ -385,7 +391,7 @@ def main():
         data = load()
         latest = max(data['scans'], key=lambda s: data['scans'][s]['scanned_at'], default=None)
         if not args.url and not latest:
-            raise ValueError('No scan recorded. Run site.py scan URL first.')
+            raise ValueError('No scan recorded. Run dfx site scan URL first.')
         scope = scope_url(args.url or latest)
         if args.command == 'scan':
             scan(data, scope, args.max_urls)

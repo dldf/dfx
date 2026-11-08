@@ -203,7 +203,7 @@ class PublicationLayoutTests(unittest.TestCase):
         lookup.assert_called_once_with(self.markdown)
         render.assert_called_once_with(self.root / 'sample.pdf', self.markdown, 'chrome', False)
         prompt.assert_not_called()
-        self.assertIn('Next: pdf stage ', output.getvalue())
+        self.assertIn('Next: dfx stage ', output.getvalue())
         self.assertNotIn('content.md', output.getvalue())
 
 

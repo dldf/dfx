@@ -160,7 +160,7 @@ def main():
                                      epilog='Rerunning replaces only review/diagnostic.md. No browser is required.')
     parser.add_argument('input', type=Path, help='PDF file to diagnose')
     parser.add_argument('output', type=Path, nargs='?', default=Path(PENDING),
-                        help=f'Output root, as with pdf convert (default: {PENDING})')
+                        help=f'Output root, as with dfx convert (default: {PENDING})')
     args = parser.parse_args()
     source = args.input.resolve()
     if not source.is_file() or source.suffix.lower() != '.pdf':

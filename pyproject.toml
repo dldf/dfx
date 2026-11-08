@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pdf = "pdf_cli:main"
+dfx = "pdf_cli:main"
 
 [tool.setuptools]
 py-modules = ["pdf_cli", "convert", "stage", "review", "diagnose", "workflow", "page_classification"]

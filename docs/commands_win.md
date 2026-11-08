@@ -13,7 +13,7 @@ Activate the Environment (if needed). Run from the project root in each new Powe
 ## Generate Markdown ✏️
 
 ```
-pdf convert "1_downloads\document.pdf"
+dfx convert "1_downloads\document.pdf"
 ```
 Converts the example PDF into `2_pending_review/document/`. Run from the project root. Existing document folders are never overwritten.\
 After success, the terminal prints the review command for copying and pasting; it does not run it automatically.
@@ -21,13 +21,13 @@ After success, the terminal prints the review command for copying and pasting; i
 To convert all PDFs in the input directory, use:
 
 ```
-pdf convert "1_downloads"
+dfx convert "1_downloads"
 ```
 
 ## Rebuild Preview 🔍
 
 ```
-pdf review "2_pending_review\document" --inspect
+dfx review "2_pending_review\document" --inspect
 ```
 Creates PNG and HTML previews from the document folder. Run this from the project root after editing the MD to see new PNGs and index.html; leaves MD unchanged. Styling is linked from assets/main.css. (`--inspect` at the end is optional; it opens the new HTML in your browser.)
 
@@ -38,7 +38,7 @@ After successful review, the terminal prints the stage command for copying and p
 ## Stage for Publication 🚀
 
 ```
-pdf stage "2_pending_review\document"
+dfx stage "2_pending_review\document"
 ```
 
 After the conversion has been reviewed and edited (if necessary) by a human, it is ready to be published. This command moves the new files to a publication folder. From there they may be uploaded to a web server.
@@ -56,9 +56,9 @@ _See the **Command Usage Instructions** below for how to issue commands._
 Replace `https://example.edu/department/` with the website folder you want to search. This is an example URL, not a required source for your PDF.
 
 ```
-python site.py scan "https://example.edu/department/"
-python site.py tree
-python site.py download
+dfx site scan "https://example.edu/department/"
+dfx site tree
+dfx site download
 ```
 
 These commands:
@@ -72,7 +72,7 @@ The scan visits up to **250 URLs by default**, including pages and PDFs. Increas
 ### List PDF folders without saving a scan
 
 ```
-python site.py scan "https://example.edu/department/" --folders --max-urls 100
+dfx site scan "https://example.edu/department/" --folders --max-urls 100
 ```
 
 This lists only folders containing PDFs found during this scan, with a count for
@@ -84,7 +84,7 @@ make the listing incomplete. Run a normal scan later to save results for downloa
 
 ### Exclude website folders
 
-Create `.pdfignore` in the `pdf2md` project root. Replace these example URLs with
+Create `.pdfignore` in the `dfx` project root. Replace these example URLs with
 full URLs of folders to skip:
 
 ```text
@@ -100,7 +100,7 @@ slash is optional. `/archive/` excludes that folder and its descendants, but not
 
 Exclusions apply to normal scans, folder summaries, downloads, and redirects.
 Previously saved records and downloaded files are kept; excluded records can
-still appear in `site.py tree`, but are not offered for download. Excluding the
+still appear in `dfx site tree`, but are not offered for download. Excluding the
 scan root stops the scan with an error. If `.pdfignore` is absent, nothing is
 excluded beyond the existing scope and `robots.txt` rules.
 
@@ -108,14 +108,14 @@ excluded beyond the existing scope and `robots.txt` rules.
 
 | Purpose | Command | Notes |
 | --- | --- | --- |
-| Show latest scan’s status tree | `python site.py tree` | Shows workflow status based on local files. |
-| Show this scope’s status tree | `python site.py tree "https://example.edu/department/"` | Shows this website folder. |
-| Mark reviewed and prepare for publication | `pdf stage "2_pending_review\document"` | Prompts for your name, stages index.html and assets in 3_ready_to_publish/, archives Markdown and log in assets/_pdf2md/, and removes review/. Leaves a dated receipt. Does not rebuild HTML. |
-| Show conversion help | `pdf convert --help` | Lists conversion options. |
-| Show review help | `pdf review --help` | Lists review options. |
-| Show website command help | `python site.py --help` | Lists website commands. |
-| Show scan options | `python site.py scan --help` | Lists scan options. |
-| Show verification help | `pdf stage --help` | Lists verification options. Custom output locations are outside the tracked workflow. |
+| Show latest scan’s status tree | `dfx site tree` | Shows workflow status based on local files. |
+| Show this scope’s status tree | `dfx site tree "https://example.edu/department/"` | Shows this website folder. |
+| Mark reviewed and prepare for publication | `dfx stage "2_pending_review\document"` | Prompts for your name, stages index.html and assets in 3_ready_to_publish/, archives Markdown and log in assets/_pdf2md/, and removes review/. Leaves a dated receipt. Does not rebuild HTML. |
+| Show conversion help | `dfx convert --help` | Lists conversion options. |
+| Show review help | `dfx review --help` | Lists review options. |
+| Show website command help | `dfx site --help` | Lists website commands. |
+| Show scan options | `dfx site scan --help` | Lists scan options. |
+| Show verification help | `dfx stage --help` | Lists verification options. Custom output locations are outside the tracked workflow. |
 | Run regression tests | `python -m unittest discover -s tests -q` | Checks converter and preview behavior. |
 
 The tree tracks file presence automatically: **[1] Downloaded** in `1_downloads/`, **[2] Pending Review** in `2_pending_review/`, and **[3] Ready to Publish** in `3_ready_to_publish/`. New ready documents require `index.html`, `assets/main.css`, and both archived Markdown files. Legacy root-level Markdown remains recognized. The highest stage present wins. Discovered URLs without local files are unnumbered and marked “not downloaded.” Custom output locations are outside this tracked workflow.
@@ -124,20 +124,20 @@ For documents in `2_pending_review/`, run the verification command after human r
 
 ## Command Usage Instructions 📓
 
-**Copy/Paste** the commands **from** the examples and tables above **into** your terminal (at the pdf2md root). Open a new PowerShell or Command Prompt window to get the command line interface, then:
+**Copy/Paste** the commands **from** the examples and tables above **into** your terminal (at the dfx root). Open a new PowerShell or Command Prompt window to get the command line interface, then:
 
 ### Example
 
-Copy a command like `pdf convert --help`\
-Paste it into a terminal at the **pdf2md** prompt. The path shown here is an example; yours will differ. Copy only the command, not the prompt:
+Copy a command like `dfx convert --help`\
+Paste it into a terminal at the **dfx** prompt. The path shown here is an example; yours will differ. Copy only the command, not the prompt:
 
 ```
-(.venv) PS C:\Projects\pdf2md> pdf convert --help
+(.venv) PS C:\Projects\dfx> dfx convert --help
 ```
 
 These commands work in Windows PowerShell and Command Prompt, except that activation differs between them. Double quotes work in both shells. In Command Prompt, the example prompt above has no `PS` prefix. Git Bash and WSL use different activation commands; see [the macOS/Linux guide](commands_mac.md) for bash-style commands. Unusual names or URLs containing shell expansion characters (such as dollar signs, percent signs, or backticks) may need additional escaping for your shell.
 
-Open your terminal in the `pdf2md` project root. Paths in the commands are relative to that root. The source PDFs and output folders must be present in the same project layout.
+Open your terminal in the `dfx` project root. Paths in the commands are relative to that root. The source PDFs and output folders must be present in the same project layout.
 
 ## Environment Setup (a one-time process) ⚙️
 
@@ -149,20 +149,20 @@ Run these from the project root:
 | Activate it | `.\.venv\Scripts\Activate.ps1` | `.venv\Scripts\activate.bat` |
 | Install project and dependencies | `python -m pip install -e .` | `python -m pip install -e .` |
 
-If you have newly downloaded the project (as from github.com), and are preparing to work locally, the first step is to configure the Python virtual environment. These steps create the `.venv` folder your system needs to carry out the commands in the pdf2md project.
+If you have newly downloaded the project (as from github.com), and are preparing to work locally, the first step is to configure the Python virtual environment. These steps create the `.venv` folder your system needs to carry out the commands in the dfx project.
 
 Activate the Python virtual environment with `.\.venv\Scripts\Activate.ps1` in PowerShell, or `.venv\Scripts\activate.bat` in Command Prompt, to make your terminal use the right Python installation and packages.
 
 ```
-PS C:\Projects\pdf2md> .\.venv\Scripts\Activate.ps1
+PS C:\Projects\dfx> .\.venv\Scripts\Activate.ps1
 ```
 
 When the environment is active, you'll see the `(.venv)` at the start of the prompt:
 
 ```
-(.venv) PS C:\Projects\pdf2md>
+(.venv) PS C:\Projects\dfx>
 ```
 
-If PowerShell blocks activation, use Command Prompt or skip activation by replacing `pdf` with `.\.venv\Scripts\pdf.exe`, or `python` with `.\.venv\Scripts\python.exe`. If `py` is unavailable during setup, use `python -m venv .venv` with your installed Python.
+If PowerShell blocks activation, use Command Prompt or skip activation by replacing `dfx` with `.\.venv\Scripts\dfx.exe`, or `python` with `.\.venv\Scripts\python.exe`. If `py` is unavailable during setup, use `python -m venv .venv` with your installed Python.
 
 Recreate the virtual environment when moving the project from another operating system. Pandoc and Chrome must also be installed; their executable paths differ from macOS.

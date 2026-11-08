@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create reviewable Markdown drafts from one PDF or a folder; no AI service."""
+"""Create reviewable Markdown from a PDF, a LaTeX file, or a folder of PDFs."""
 import argparse
 from collections import Counter
 import hashlib
@@ -11,13 +11,13 @@ import re
 import subprocess
 import sys
 import unicodedata
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import pdfplumber
 import pymupdf
 from bs4 import BeautifulSoup
 
-from review import find_chrome, preview
+from review import find_chrome, preview, render_inline_headings
 from page_classification import classify_page
 from workflow import PENDING, conversion_destination, diagnostic_only, next_command
 
@@ -198,6 +198,71 @@ def format_spans(spans, heading=False, bullet=None):
         result.append((' ' if text[0].isspace() else '') + formatted
                       + (' ' if text[-1].isspace() else ''))
     return clean(''.join(result))
+
+
+def markdown_inline_heading(paragraph, line_count):
+    """Write qualifying body headings into Markdown, preserving list context."""
+    match = re.match(r'^( *)(?:(\d{1,2}[.)]|[a-z][.)]|-) +)?', paragraph)
+    indent, marker = match[1], match[2]
+    body = paragraph[match.end():]
+    rendered = subprocess.run(
+        ['pandoc', '--from=markdown+raw_html+fancy_lists+startnum-smart-implicit_figures', '--to=html5'],
+        input=body + f' <!-- pdf2md-inline-heading: {line_count} -->',
+        capture_output=True, text=True, check=True)
+    soup = BeautifulSoup(rendered.stdout, 'html.parser')
+    render_inline_headings(soup)
+    heading = soup.select_one('h4.inline-heading')
+    if heading is None:
+        return paragraph
+    # Bold is now conveyed by the heading itself; keep other inline formatting.
+    for strong in heading.select('strong'):
+        strong.unwrap()
+    container = heading.parent
+    heading.extract()
+    remainder = soup.new_tag('p')
+    for child in list(container.contents):
+        remainder.append(child.extract())
+    has_remainder = bool(remainder.get_text(strip=True) or remainder.find(True))
+    if has_remainder:
+        heading['class'].append('inline-heading-prefix')
+    html = str(heading)
+    if has_remainder:
+        html += str(remainder)
+    parsed = subprocess.run(['pandoc', '--from=html', '--to=json'], input=html,
+                            capture_output=True, text=True, check=True)
+    document = json.loads(parsed.stdout)
+    for block in document['blocks']:
+        if block['t'] == 'Header':
+            # Let the final document renderer assign unique heading IDs.
+            block['c'][1][0] = ''
+
+    def preserve_marks(value):
+        # Pandoc's HTML reader represents <mark> as a span. Retain the original
+        # raw inline tags so highlights survive in Markdown and HTML alike.
+        if isinstance(value, list):
+            result = []
+            for item in value:
+                if isinstance(item, dict) and item.get('t') == 'Span' and item['c'][0][1] == ['mark']:
+                    result.extend([{'t': 'RawInline', 'c': ['html', '<mark>']},
+                                   *preserve_marks(item['c'][1]),
+                                   {'t': 'RawInline', 'c': ['html', '</mark>']}])
+                else:
+                    result.append(preserve_marks(item))
+            return result
+        if isinstance(value, dict):
+            return {key: preserve_marks(item) for key, item in value.items()}
+        return value
+
+    written = subprocess.run(['pandoc', '--from=json', '--to=markdown-smart', '--wrap=none'],
+                             input=json.dumps(preserve_marks(document)),
+                             capture_output=True, text=True, check=True).stdout.strip()
+    lines = written.splitlines()
+    if marker:
+        # Four-column list content indentation matches the converter's lists.
+        prefix = marker + ' ' * (4 - len(marker))
+        return indent + prefix + lines[0] + ''.join(
+            '\n' + (indent + '    ' + line if line else '') for line in lines[1:])
+    return '\n'.join(indent + line if line else '' for line in lines)
 
 
 def join_blocks(blocks):
@@ -784,7 +849,7 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                 nonlocal paragraph, paragraph_has_bold
                 if paragraph:
                     if paragraph_has_bold:
-                        paragraph += f' <!-- pdf2md-inline-heading: {len(paragraph_lines)} -->'
+                        paragraph = markdown_inline_heading(paragraph, len(paragraph_lines))
                     page_parts.append(paragraph)
                     paragraph = ''
                 paragraph_lines.clear()
@@ -917,23 +982,122 @@ def convert_pdf(pdf, destination, *, page_modes=None):
         return len(document), flagged_pages
 
 
+def convert_latex(tex, destination):
+    """Import self-contained LaTeX without inventing PDF page boundaries."""
+    if destination.is_symlink():
+        raise FileExistsError(f'{destination} is a symlink. Choose another output folder to protect edits.')
+    tex, destination = tex.resolve(), destination.resolve()
+    if destination.exists() and not diagnostic_only(destination):
+        raise FileExistsError(f'{destination} exists. Choose another output folder to protect edits.')
+    original = tex.read_bytes()
+    source = original.decode('utf-8-sig')
+    uncommented = re.sub(r'(?<!\\)%[^\n]*', '', source)
+    if re.search(r'\\(?:input|include|bibliography|addbibresource)\b', uncommented):
+        raise ValueError('This LaTeX importer currently requires a self-contained .tex file. '
+                         'Expand included text and bibliography content before importing.')
+    parsed = subprocess.run(['pandoc', '--from=latex+raw_tex', '--to=json'], input=source,
+                            cwd=tex.parent, capture_output=True, text=True, check=True)
+    ast = json.loads(parsed.stdout)
+    notes = [
+        'Imported from LaTeX. Review every equation, heading, list, table, and image before staging.',
+        'Font defaults to serif; confirm the font setting in content.md.',
+        'Preview covers the whole document. No correspondence to PDF page breaks is asserted.',
+        'LaTeX headers/footers, title metadata, equation numbers, references, and layout commands '
+        'may be omitted or changed. Check these against the source and add missing content to Markdown.',
+    ]
+    notes.extend(parsed.stderr.strip().splitlines())
+    assets = []
+
+    def adapt(value):
+        if isinstance(value, list):
+            result = []
+            for item in value:
+                if isinstance(item, dict) and item.get('t') == 'Image':
+                    target = item['c'][2][0]
+                    parts = urlsplit(target)
+                    image_path = (tex.parent / unquote(parts.path)).resolve()
+                    if (parts.scheme or parts.netloc or not image_path.is_relative_to(tex.parent)
+                            or not image_path.is_file()
+                            or image_path.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg')):
+                        raise ValueError(f'LaTeX image needs a local browser-readable file under {tex.parent}: {target}')
+                    number = len(assets) + 1
+                    name = f'figure-{number:03d}{image_path.suffix.lower()}'
+                    assets.append((name, image_path.read_bytes()))
+                    item['c'][2][0] = 'assets/' + name
+                    result.append({'t': 'RawInline', 'c': ['html', f'<!-- description: desc-{number:03d} -->']})
+                    notes.append(f'Review description and alternative text for image {name}.')
+                result.append(adapt(item))
+            return result
+        if isinstance(value, dict):
+            if value.get('t') in ('RawBlock', 'RawInline') and value['c'][0] in ('tex', 'latex'):
+                notes.append('Unrendered LaTeX retained in Markdown; replace with supported content: '
+                             + value['c'][1])
+            return {key: adapt(item) for key, item in value.items()}
+        return value
+
+    ast = adapt(ast)
+    written = subprocess.run(['pandoc', '--from=json', '--to=markdown-smart', '--wrap=none'],
+                             input=json.dumps(ast), capture_output=True, text=True, check=True)
+    notes.extend(written.stderr.strip().splitlines())
+    if not written.stdout.strip():
+        raise ValueError('Pandoc produced no Markdown content.')
+    records = {'tex': {'path': str(tex), 'sha256': hashlib.sha256(original).hexdigest()}}
+    companions = [p for p in tex.parent.iterdir()
+                  if p.is_file() and p.stem == tex.stem and p.suffix.lower() == '.pdf']
+    if len(companions) > 1:
+        raise ValueError('Multiple companion PDFs found; keep only the intended comparison PDF beside the .tex file.')
+    if companions:
+        pdf = companions[0]
+        with pymupdf.open(pdf) as document:
+            if not document.is_pdf or document.needs_pass or not len(document):
+                raise ValueError('Companion PDF must be a nonempty, unlocked PDF.')
+        records['pdf'] = {'path': str(pdf), 'sha256': hashlib.sha256(pdf.read_bytes()).hexdigest()}
+        notes.append('Companion PDF is for visual comparison; confirm it was built from this LaTeX source.')
+    else:
+        notes.append('No companion PDF found. Compare the conversion with the LaTeX source.')
+    metadata = json.dumps(records).replace('--', '\\u002d\\u002d')
+    markdown = f'---\nfont: serif\n---\n\n<!-- pdf2md-latex: {metadata} -->\n\n' + written.stdout
+    if tex.read_bytes() != original:
+        raise ValueError('LaTeX source changed during conversion; retry.')
+    # Finish parsing and validating assets before creating any output.
+    destination.mkdir(parents=True, exist_ok=diagnostic_only(destination))
+    (destination / 'assets').mkdir()
+    (destination / 'review').mkdir(exist_ok=True)
+    for name, data in assets:
+        (destination / 'assets' / name).write_bytes(data)
+    (destination / 'content.md').write_text(markdown, encoding='utf-8')
+    links = [f'[{kind.upper()}]({quote(os.path.relpath(record["path"], destination / "review"), safe="/")})'
+             for kind, record in records.items()]
+    links.extend(['[content.MD](../content.md)', '[index.HTML](../index.html)'])
+    log = ['# ' + escape(tex.stem), '', ' | '.join(links), '', '## Document review', '']
+    log.extend('- ' + escape(note) for note in dict.fromkeys(notes) if note)
+    if companions:
+        with pymupdf.open(companions[0]) as document:
+            log.extend(['', '## Original PDF pages', ''])
+            pdf_link = quote(os.path.relpath(companions[0], destination / 'review'), safe='/')
+            log.extend(f'- [Page {number}]({pdf_link}#page={number})' for number in range(1, len(document) + 1))
+    (destination / 'review/log.md').write_text('\n'.join(log) + '\n', encoding='utf-8')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, epilog='Existing conversions are never overwritten. A folder containing only review/diagnostic.md may be used.')
-    parser.add_argument('input', type=Path, help='PDF file or folder (folders are scanned recursively)')
+    parser.add_argument('input', type=Path, help='PDF or .tex file, or folder (folders scan PDFs recursively)')
     parser.add_argument('output', type=Path, nargs='?', default=Path(PENDING), help=f'Output root (default: {PENDING})')
     parser.add_argument('--chrome', help='Chrome executable used to generate review images and HTML')
     parser.add_argument('--page-mode', type=page_mode, action='append', default=[], metavar='PAGE=MODE',
                         help='Single PDF only: override a 1-based page with auto, markdown, or svg; repeat for other pages')
     args = parser.parse_args()
     source, target = args.input.resolve(), args.output.resolve()
-    if source.is_file() and source.suffix.lower() == '.pdf':
+    if source.is_file() and source.suffix.lower() in ('.pdf', '.tex'):
+        if source.suffix.lower() == '.tex' and args.page_mode:
+            parser.error('--page-mode applies only to PDFs.')
         pdfs, base = [source], source.parent
     elif source.is_dir():
         if args.page_mode:
             parser.error('--page-mode requires a single PDF, not a folder.')
         pdfs, base = sorted(p for p in source.rglob('*') if p.is_file() and p.suffix.lower() == '.pdf'), source
     else:
-        parser.error('Input must be an existing PDF or folder.')
+        parser.error('Input must be an existing PDF, .tex file, or folder.')
     if not pdfs:
         parser.error('No PDFs found.')
     page_modes = dict(args.page_mode)
@@ -947,14 +1111,18 @@ def main():
     for pdf in pdfs:
         destination = conversion_destination(pdf, base, target)
         try:
-            pages, flagged = convert_pdf(pdf, destination, page_modes=page_modes)
-            print(f'{pdf.name}: {pages} pages, {flagged} flagged for review -> {destination / "content.md"}')
+            if pdf.suffix.lower() == '.tex':
+                convert_latex(pdf, destination)
+                print(f'{pdf.name}: LaTeX document imported; review required -> {destination / "content.md"}')
+            else:
+                pages, flagged = convert_pdf(pdf, destination, page_modes=page_modes)
+                print(f'{pdf.name}: {pages} pages, {flagged} flagged for review -> {destination / "content.md"}')
             try:
                 preview(pdf, destination / 'content.md', chrome)
                 print(f'Next: {next_command("review", destination, args.chrome)}')
             except Exception as exc:
                 raise RuntimeError(f'Markdown saved, but preview failed: {exc}. '
-                                   f'Retry pdf review with {destination / "content.md"}.') from exc
+                                   f'Retry dfx review with {destination / "content.md"}.') from exc
         except Exception as exc:
             failures += 1
             print(f'{pdf.name}: {exc}', file=sys.stderr)

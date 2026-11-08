@@ -1,4 +1,5 @@
-# pdf2md
+# DFX
+## Document Format eXchange
 
 Convert PDFs into editable Markdown drafts, with HTML previews and paired
 original/revised page images for review. An optional website scanner discovers
@@ -28,8 +29,8 @@ been verified end to end.
 ## Get the project
 
 ```sh
-git clone https://github.com/dldf/pdf2md.git
-cd pdf2md
+git clone https://github.com/dldf/dfx.git
+cd dfx
 ```
 
 If you downloaded a ZIP, open a terminal in its extracted project folder instead.
@@ -61,8 +62,8 @@ py -3 -m venv .venv
 python -m pip install -e .
 ```
 
-Activation is optional: substitute `.venv/bin/pdf` on macOS/Linux or
-`.\.venv\Scripts\pdf.exe` on Windows for `pdf`. For commands starting with
+Activation is optional: substitute `.venv/bin/dfx` on macOS/Linux or
+`.\.venv\Scripts\dfx.exe` on Windows for `dfx`. For commands starting with
 `python`, use `.venv/bin/python` or `.\.venv\Scripts\python.exe`.
 This avoids changing PowerShell execution policies. If `py` is unavailable,
 use the command for your installed Python 3.11+ interpreter.
@@ -71,7 +72,7 @@ Run `python --version` and `pandoc --version` to check setup. Reactivate the
 virtual environment in each new terminal. Recreate `.venv` if you move or rename
 the project folder; virtual environments contain absolute paths.
 
-The install command reads dependencies from `pyproject.toml` and adds `pdf` to
+The install command reads dependencies from `pyproject.toml` and adds `dfx` to
 the environment. Existing users should run `python -m pip install -e .` once.
 The editable installation uses the code in this project folder.
 
@@ -85,7 +86,7 @@ Place a PDF at `1_downloads/document.pdf`, or substitute the path to your own fi
 Quote paths containing spaces. From the project folder, run:
 
 ```sh
-pdf convert "1_downloads/document.pdf"
+dfx convert "1_downloads/document.pdf"
 ```
 
 This creates `2_pending_review/document/` containing:
@@ -104,7 +105,7 @@ per-document command files in `review/`.
 
 Conversion generates the initial HTML and paired review images automatically.
 Styles are linked from `assets/main.css`; inline style attributes are retained.
-After each successful conversion, the terminal prints a `pdf review` command to
+After each successful conversion, the terminal prints a `dfx review` command to
 copy and paste. It does not wait for confirmation or run the next step.
 A folder input converts
 PDFs recursively. The default output root is `2_pending_review/`. Converting a
@@ -126,8 +127,8 @@ anchors remain in the Markdown.
 For a single PDF, override individual pages using 1-based page numbers:
 
 ```sh
-pdf convert "1_downloads/document.pdf" --page-mode 1=svg
-pdf convert "1_downloads/document.pdf" "2_pending_review/retry" --page-mode 1=markdown --page-mode 3=svg
+dfx convert "1_downloads/document.pdf" --page-mode 1=svg
+dfx convert "1_downloads/document.pdf" "2_pending_review/retry" --page-mode 1=markdown --page-mode 3=svg
 ```
 
 Modes are `auto` (the default), `markdown` (the existing extraction path), and
@@ -167,7 +168,7 @@ Chrome application. On Windows, or for another installation location, supply
 `--chrome` to both conversion and preview commands. For a common Windows install:
 
 ```powershell
-pdf convert "1_downloads/document.pdf" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
+dfx convert "1_downloads/document.pdf" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
 
 Use the actual executable path on your computer. A per-user Windows installation
@@ -183,13 +184,13 @@ necessarily mean the conversion is wrong.
 Edit `2_pending_review/document/content.md`, then refresh the preview:
 
 ```sh
-pdf review "2_pending_review/document/"
+dfx review "2_pending_review/document/"
 ```
 
 On Windows, include the browser path again:
 
 ```powershell
-pdf review "2_pending_review/document/" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
+dfx review "2_pending_review/document/" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
 
 The review command locates the original PDF under `1_downloads/` using the
@@ -213,7 +214,7 @@ This replaces the old `python preview.py PDF MARKDOWN` command.
 Folder arguments select the `content.md` inside that document folder; explicit
 Markdown paths are also accepted. Review rebuilds HTML and paired images without
 editing Markdown or prompting for titles or image descriptions. After successful
-review of a document under `2_pending_review/`, the terminal prints the `pdf stage`
+review of a document under `2_pending_review/`, the terminal prints the `dfx stage`
 command to copy and paste. It does not run staging automatically.
 
 Append `--inspect` to open the saved HTML, or open `index.html` yourself.
@@ -289,9 +290,9 @@ and `id`/`headers` associations. Image-only or undetected tables need reconstruc
 Replace `https://example.edu/department/` with the website folder you want to search:
 
 ```sh
-python site.py scan "https://example.edu/department/"
-python site.py tree
-python site.py download
+dfx site scan "https://example.edu/department/"
+dfx site tree
+dfx site download
 ```
 
 These commands:
@@ -314,7 +315,7 @@ Existing inventory status fields are ignored; old history may remain for referen
 ### List PDF folders without saving a scan
 
 ```sh
-python site.py scan "https://example.edu/department/" --folders --max-urls 100
+dfx site scan "https://example.edu/department/" --folders --max-urls 100
 ```
 
 This lists only folders containing PDFs found during this scan, with a count for
@@ -326,7 +327,7 @@ make the listing incomplete. Run a normal scan later to save results for downloa
 
 ### Exclude website folders
 
-Create `.pdfignore` in the `pdf2md` project root. Replace these example URLs with
+Create `.pdfignore` in the `dfx` project root. Replace these example URLs with
 full URLs of folders to skip:
 
 ```text
@@ -342,14 +343,14 @@ slash is optional. `/archive/` excludes that folder and its descendants, but not
 
 Exclusions apply to normal scans, folder summaries, downloads, and redirects.
 Previously saved records and downloaded files are kept; excluded records can
-still appear in `site.py tree`, but are not offered for download. Excluding the
+still appear in `dfx site tree`, but are not offered for download. Excluding the
 scan root stops the scan with an error. If `.pdfignore` is absent, nothing is
 excluded beyond the existing scope and `robots.txt` rules.
 
 ### Track review status
 
 ```sh
-python site.py tree
+dfx site tree
 ```
 
 | Status | Determined by file presence |
@@ -368,7 +369,7 @@ but are outside automatic status tracking and `stage.py`.
 Refresh and inspect the preview after your final Markdown edits, then run:
 
 ```sh
-pdf stage "2_pending_review/document/"
+dfx stage "2_pending_review/document/"
 ```
 
 The command prompts for your name; the local date, time, and UTC offset are generated.
@@ -426,9 +427,9 @@ them. Newly generated documents keep review guidance in `review/log.md` instead.
   `Install Certificates.command` in that Python version's Applications folder.
   On managed computers, ask your IT team about required certificate authorities.
 - **Existing output folder:** select a new output root for reconversion. Use
-  `pdf review` when you only want to render Markdown edits.
+  `dfx review` when you only want to render Markdown edits.
 - **Little or no extracted text:** this converter has no OCR stage. Obtain a
   text-bearing PDF or transcribe/OCR the content separately before review.
 
-Run `pdf convert --help`, `pdf review --help`,
-`python site.py --help`, or `pdf stage --help` for command options.
+Run `dfx convert --help`, `dfx review --help`,
+`dfx site --help`, or `dfx stage --help` for command options.
