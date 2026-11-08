@@ -1,12 +1,3 @@
 # EXCLUDE these folders (and descendants) from scans
 
-https://www.cs.montana.edu/paxton
-https://www.cs.montana.edu/users/murphy
-https://www.cs.montana.edu/yaw/
-
-# --------------------------------------------
-
-# Folders with PDFs: Prepend these URLs with # to include them in scans
-
-# https://www.cs.montana.edu/forms/
-# https://www.cs.montana.edu/msu-accreditation/
+https://www.example.com/personal
