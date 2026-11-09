@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan a URL subtree, confirm PDF downloads, and show folder-based review status."""
+"""Discover PDFs, audit HTML accessibility, and display document and score trees."""
 import argparse
 from collections import Counter, deque
 from datetime import datetime, timezone
@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import posixpath
 import re
+import sys
 import tempfile
 import time
 from urllib.error import HTTPError
@@ -19,7 +20,7 @@ from urllib.robotparser import RobotFileParser
 from bs4 import BeautifulSoup
 from .workflow import ROOT, DOWNLOADS, PENDING, READY, document_present
 
-INVENTORY = ROOT / 'data' / 'inventory.json'
+INVENTORY = ROOT / 'data' / 'pdfs.json'
 AGENT = 'pdf2md/1.0'
 STAGES = {'1': 'Downloaded', '2': 'Pending Review', '3': 'Ready to Publish'}
 
@@ -77,6 +78,13 @@ def excluded(url, folders):
 
 
 def load():
+    legacy = INVENTORY.with_name('inventory.json')
+    if legacy.exists():
+        if INVENTORY.exists():
+            raise ValueError('Both inventory.json and pdfs.json exist; resolve the duplicate before continuing. Neither file was changed.')
+        # Link first so a concurrent writer cannot be overwritten; preserve bytes.
+        INVENTORY.hardlink_to(legacy)
+        legacy.unlink()
     try:
         contents = INVENTORY.read_text()
     except FileNotFoundError:
@@ -90,14 +98,18 @@ def load():
 
 
 def save(data):
+    save_json(INVENTORY, data)
+
+
+def save_json(path, data):
     # Adapted from the archived catalog approach; replace atomically.
-    INVENTORY.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode='w', dir=INVENTORY.parent, delete=False, encoding='utf-8') as stream:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False, encoding='utf-8') as stream:
         temporary = Path(stream.name)
         json.dump(data, stream, indent=2, ensure_ascii=False)
         stream.write('\n')
     try:
-        temporary.replace(INVENTORY)
+        temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -152,8 +164,31 @@ class Client:
             'User-Agent': AGENT, 'Accept-Encoding': 'identity'}), timeout=20)
 
 
-def scan(data, scope, limit, *, folders=False):
-    exclusions = load_exclusions()
+def higher_limit(limit, interactive):
+    print(f'Scan limit reached ({limit} URLs); discovered links remain. Increase --max-urls above {limit} to continue discovery.')
+    if not interactive:
+        return None
+    while True:
+        try:
+            answer = input(f'New --max-urls greater than {limit}, or Enter to stop: ').strip()
+        except (EOFError, KeyboardInterrupt):
+            print('\nStopped at the current limit.')
+            return None
+        if not answer:
+            return None
+        try:
+            value = int(answer)
+            if value > limit:
+                return value
+        except ValueError:
+            pass
+        print(f'Enter a whole number greater than {limit}.')
+
+
+def scan(data, scope, limit, *, folders=False, on_page=None, interactive=False):
+    pdf_inventory = not folders and on_page is None
+    # HTML audits use the same crawler but PDF exclusions do not apply to them.
+    exclusions = load_exclusions() if on_page is None else ()
     if excluded(scope, exclusions):
         raise ValueError('The scan root is excluded by .pdfignore.')
     client = Client(scope, exclusions)
@@ -161,7 +196,17 @@ def scan(data, scope, limit, *, folders=False):
     errors, outside, found = [], set(), set()
     references, pdf_targets = {}, {}
     stamp = now()
-    while queue and len(seen) < limit:
+    while queue:
+        # Redirect destinations may already be queued. They do not imply more work.
+        while queue and queue[0] in seen:
+            queue.popleft()
+        if not queue:
+            break
+        if len(seen) >= limit:
+            increased = higher_limit(limit, interactive)
+            if increased is None:
+                break
+            limit = increased
         url = queue.popleft()
         if url in seen:
             continue
@@ -181,14 +226,14 @@ def scan(data, scope, limit, *, folders=False):
                 pdf = (mime == 'application/pdf' or urlsplit(final).path.lower().endswith('.pdf')
                        or '.pdf' in response.headers.get('Content-Disposition', '').lower())
                 if pdf:
-                    if not folders:
+                    if pdf_inventory:
                         entry = data['documents'].setdefault(final, {'discovered_at': stamp})
                         length = response.headers.get('Content-Length', '')
                         entry.update({'last_seen': stamp, 'size_bytes': int(length) if length.isdigit() else None})
                         entry.setdefault('referring_pages', [])
                         pdf_targets[url] = pdf_targets[final] = final
                     found.add(final)
-                    if not folders:
+                    if pdf_inventory:
                         print(f'Found PDF: {final}', flush=True)
                     continue
                 if mime not in ('text/html', 'application/xhtml+xml'):
@@ -197,6 +242,8 @@ def scan(data, scope, limit, *, folders=False):
                 if len(body) > 5_000_000:
                     raise ValueError('HTML exceeds 5 MB; page skipped')
                 soup = BeautifulSoup(body, 'html.parser')
+                if on_page is not None:
+                    on_page(final, client)
                 base = urljoin(final, soup.base.get('href', '')) if soup.base else final
                 for link in soup.select('a[href], iframe[src], embed[src], object[data]'):
                     href = link.get('href') or link.get('src') or link.get('data')
@@ -210,7 +257,7 @@ def scan(data, scope, limit, *, folders=False):
                         continue
                     if excluded(target, exclusions):
                         continue
-                    if not folders:
+                    if pdf_inventory:
                         text = ' '.join(link.get_text().split()) if link.name == 'a' else ''
                         reference = {'text': text, 'url': final}
                         target_references = references.setdefault(target, [])
@@ -223,6 +270,9 @@ def scan(data, scope, limit, *, folders=False):
             errors.append({'url': url, 'error': str(exc)})
             if not folders:
                 print(f'Skipped {url}: {exc}')
+    summary = {'scanned_at': stamp, 'visited': len(seen), 'pdfs_found': len(found),
+               'limited': bool(queue), 'max_urls': limit, 'errors': errors,
+               'outside_pdfs': sorted(outside)}
     if folders:
         counts = Counter()
         for url in found:
@@ -233,7 +283,7 @@ def scan(data, scope, limit, *, folders=False):
         print(f'{"PDF folder":<{width}}  PDFs')
         for folder, count in sorted(counts.items()):
             print(f'{folder:<{width}}  {count:>4}')
-    else:
+    elif pdf_inventory:
         # Collect after crawling: a referring page may be visited after its PDF,
         # and an extensionless link may only reveal its PDF target on redirect.
         for target, target_references in references.items():
@@ -244,15 +294,21 @@ def scan(data, scope, limit, *, folders=False):
             for reference in target_references:
                 if reference not in stored:
                     stored.append(reference)
-        data['scans'][scope] = {'scanned_at': stamp, 'visited': len(seen), 'pdfs_found': len(found),
-                               'limited': bool(queue), 'errors': errors, 'outside_pdfs': sorted(outside)}
+        data['scans'][scope] = summary
         save(data)
-    print(f'Found {len(found)} unique PDFs; {len(errors)} skipped URLs; {len(outside)} PDF links outside scope.')
-    if queue:
-        print(f'Scan limit reached ({limit} URLs). Increase --max-urls to continue discovery.')
+    if on_page is None:
+        print(f'Found {len(found)} unique PDFs; {len(errors)} skipped URLs; {len(outside)} PDF links outside scope.')
+    else:
+        print(f'Discovery visited {len(seen)} URLs; {len(errors)} skipped URLs.')
+    if not queue:
+        if errors:
+            print('Discovery finished with skipped URLs; increasing --max-urls alone will not resolve these errors.')
+        else:
+            print('Discovery complete: all discovered links within the allowed scope were processed.')
     if folders and (queue or errors):
         print('Counts may be incomplete because the scan limit was reached or URLs were skipped.')
     print('Scope: linked content only; unlinked files and JavaScript-generated links may be missed.')
+    return summary
 
 
 def documents(data, scope):
@@ -330,7 +386,7 @@ def download(data, scope):
         return
     print('Documents present in any workflow folder or excluded by .pdfignore are skipped. Reported sizes may change.')
     if input(f'Download these PDFs into {DOWNLOADS}/? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Cancelled. No PDFs downloaded; scan results remain in data/inventory.json.')
+        print('Cancelled. No PDFs downloaded; scan results remain in data/pdfs.json.')
         return
     client = Client(scope, exclusions)
     for url, entry in pending:
@@ -375,26 +431,39 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     scanner = sub.add_parser('scan', help='Discover PDFs, show tree and ask before downloading')
     scanner.add_argument('url', help='URL folder, e.g. https://example.edu/department/')
-    scanner.add_argument('--max-urls', '--max-pages', dest='max_urls', type=int, default=250, help='Maximum visited URLs (default 250)')
+    scanner.add_argument('--max-urls', '--max-pages', dest='max_urls', type=int, default=9999, help='Maximum visited URLs (default 9999)')
     scanner.add_argument('--scan-only', action='store_true', help='Save inventory without asking to download')
     scanner.add_argument('--folders', action='store_true', help='Only summarize PDF folders and counts; no tree, downloads, or inventory changes')
-    for name in ('tree', 'download'):
-        command = sub.add_parser(name, help='Display status tree' if name == 'tree' else 'Confirm downloads from a previous scan')
+    for name, help_text in (('tree', 'Display PDF status tree'),
+                            ('download', 'Confirm downloads from a previous scan'),
+                            ('audit', 'Crawl HTML pages and save Lighthouse accessibility scores'),
+                            ('scores', 'Display saved HTML accessibility scores as a tree')):
+        command = sub.add_parser(name, help=help_text)
         command.add_argument('url', nargs='?', help='Scope URL; defaults to most recent scan')
+        if name == 'audit':
+            command.add_argument('--max-urls', type=int, default=9999, help='Maximum visited URLs (default 9999)')
+            command.add_argument('--chrome', help='Chrome or Chromium executable path')
     args = parser.parse_args()
     try:
-        if args.command == 'scan' and args.max_urls < 1:
+        if args.command in ('scan', 'audit') and args.max_urls < 1:
             raise ValueError('--max-urls must be positive.')
         if args.command == 'scan' and args.folders:
-            scan({}, scope_url(args.url), args.max_urls, folders=True)
+            scan({}, scope_url(args.url), args.max_urls, folders=True, interactive=sys.stdin.isatty())
             return
         data = load()
         latest = max(data['scans'], key=lambda s: data['scans'][s]['scanned_at'], default=None)
         if not args.url and not latest:
             raise ValueError('No scan recorded. Run dfx site scan URL first.')
         scope = scope_url(args.url or latest)
+        if args.command in ('audit', 'scores'):
+            from . import site_audit
+            if args.command == 'audit':
+                site_audit.audit(scope, args.max_urls, chrome=args.chrome, interactive=sys.stdin.isatty())
+            else:
+                site_audit.scores(scope)
+            return
         if args.command == 'scan':
-            scan(data, scope, args.max_urls)
+            scan(data, scope, args.max_urls, interactive=sys.stdin.isatty())
         if args.command in ('tree', 'scan'):
             tree(data, scope)
         if args.command == 'download' or (args.command == 'scan' and not args.scan_only):

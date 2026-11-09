@@ -3,6 +3,8 @@ __pycache__/
 *.egg-info/
 .DS_Store
 /data/inventory.json
+/data/pdfs.json
+/data/page_scores.json
 1_downloads/
 2_review/
 3_publish/

@@ -6,11 +6,12 @@ import io
 import json
 from pathlib import Path
 import sys
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from dfx import site
+from dfx import site, site_audit
 
 
 class Response(io.BytesIO):
@@ -29,7 +30,7 @@ class DiscoveryTests(unittest.TestCase):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.inventory = self.root / 'data' / 'inventory.json'
+        self.inventory = self.root / 'data' / 'pdfs.json'
         self.requests = []
         self.routes = {
             'https://example.edu/robots.txt': ('User-agent: *\nAllow: /', 'text/plain'),
@@ -215,6 +216,163 @@ class DiscoveryTests(unittest.TestCase):
         prompt.assert_not_called()
         self.assertEqual(self.requests, [])
         self.assertEqual(data, before)
+
+    def test_inventory_migration_preserves_bytes_and_refuses_conflicts(self):
+        self.inventory.parent.mkdir()
+        legacy = self.inventory.with_name('inventory.json')
+        contents = b'{"version":1,"scans":{},"documents":{}}\n'
+        legacy.write_bytes(contents)
+        self.assertEqual(site.load()['documents'], {})
+        self.assertEqual(self.inventory.read_bytes(), contents)
+        self.assertFalse(legacy.exists())
+        legacy.write_text('different inventory')
+        with self.assertRaisesRegex(ValueError, 'Both inventory.json and pdfs.json'):
+            site.load()
+        self.assertEqual(self.inventory.read_bytes(), contents)
+        self.assertEqual(legacy.read_text(), 'different inventory')
+
+    def test_limit_can_continue_without_revisiting_pages(self):
+        with patch('builtins.input', side_effect=['1', 'invalid', '100']) as prompt, redirect_stdout(io.StringIO()) as output:
+            summary = site.scan({}, self.scope, 1, folders=True, interactive=True)
+        self.assertEqual(prompt.call_count, 3)
+        self.assertFalse(summary['limited'])
+        self.assertEqual(summary['max_urls'], 100)
+        self.assertEqual(self.requests.count(self.scope), 1)
+        self.assertIn('Discovery complete', output.getvalue())
+
+    def test_limit_decline_saves_partial_scan(self):
+        data = {'version': 1, 'documents': {}, 'scans': {}}
+        with patch('builtins.input', return_value=''), redirect_stdout(io.StringIO()):
+            site.scan(data, self.scope, 1, interactive=True)
+        saved = site.load()['scans'][self.scope]
+        self.assertTrue(saved['limited'])
+        self.assertEqual(saved['visited'], 1)
+
+    def test_redirect_already_in_queue_does_not_report_a_limit(self):
+        self.routes[self.scope] = ('<a href="alias">a</a><a href="reports/one.pdf">b</a>', 'text/html')
+        with patch('builtins.input') as prompt, redirect_stdout(io.StringIO()):
+            summary = site.scan({}, self.scope, 3, folders=True, interactive=True)
+        self.assertFalse(summary['limited'])
+        prompt.assert_not_called()
+
+    def test_audit_scores_unique_html_and_preserves_pdf_inventory(self):
+        self.routes[self.scope] = (
+            '<a href="about.html">about</a><a href="about-alias">alias</a>'
+            '<a href="reports/one.pdf">PDF</a><a href="archive/secret.pdf">excluded</a>', 'text/html')
+        self.routes[self.scope + 'about.html'] = ('<h1>About</h1>', 'text/html')
+        self.redirects[self.scope + 'about-alias'] = self.scope + 'about.html'
+        site.save({'version': 1, 'documents': {}, 'scans': {}})
+        original = self.inventory.read_bytes()
+        site.save_json(site_audit.score_path(), {'version': 1, 'scans': {'https://other.edu/': {'pages': {}}}})
+        with patch.object(site_audit, 'lighthouse_command', return_value=['lighthouse']), patch.object(
+                site_audit, 'page_score', side_effect=[{'score': 87}, ValueError('Browser failed')]) as scorer, redirect_stdout(io.StringIO()):
+            site_audit.audit(self.scope, 9999)
+        saved = site_audit.load_scores()['scans']
+        self.assertIn('https://other.edu/', saved)
+        run = saved[self.scope]
+        self.assertEqual(len(run['pages']), 2)
+        self.assertEqual(scorer.call_count, 2)
+        self.assertEqual(run['pages'][self.scope]['score'], 87)
+        self.assertIsNone(run['pages'][self.scope + 'about.html']['score'])
+        self.assertEqual(run['pages'][self.scope + 'about.html']['error'], 'Browser failed')
+        self.assertFalse(run['limited'])
+        self.assertIsNotNone(run['finished_at'])
+        self.assertEqual(self.inventory.read_bytes(), original)
+
+    def test_audit_disregards_pdfignore_but_keeps_scope_and_robots_rules(self):
+        direct = self.scope + 'archive/direct.html'
+        redirected = self.scope + 'archive/redirected.html'
+        blocked = self.scope + 'blocked.html'
+        outside = 'https://other.edu/page.html'
+        self.routes[self.scope] = (
+            '<a href="archive/direct.html">Direct</a><a href="alias">Redirect</a>'
+            '<a href="blocked.html">Robots blocked</a><a href="outside-alias">Outside</a>', 'text/html')
+        self.routes[direct] = self.routes[redirected] = ('<h1>Page</h1>', 'text/html')
+        self.routes['https://example.edu/robots.txt'] = (
+            'User-agent: *\nDisallow: /department/blocked.html\n', 'text/plain')
+        self.redirects[self.scope + 'alias'] = redirected
+        self.redirects[self.scope + 'outside-alias'] = outside
+
+        def score(command, url, client, chrome):
+            self.assertTrue(client.allowed(url))
+            self.assertFalse(client.allowed(blocked))
+            self.assertFalse(client.allowed(outside))
+            return {'score': 87}
+
+        for rules in (self.scope + 'archive/', self.scope, 'invalid rule'):
+            with self.subTest(pdfignore=rules):
+                (self.root / '.pdfignore').write_text(rules)
+                self.requests.clear()
+                with patch.object(site_audit, 'lighthouse_command', return_value=['lighthouse']), patch.object(
+                        site_audit, 'page_score', side_effect=score), redirect_stdout(io.StringIO()):
+                    site_audit.audit(self.scope, 9999)
+                run = site_audit.load_scores()['scans'][self.scope]
+                self.assertEqual(set(run['pages']), {self.scope, direct, redirected})
+                self.assertTrue(all(page['score'] == 87 for page in run['pages'].values()))
+                self.assertEqual(len(run['errors']), 2)
+                self.assertNotIn(blocked, self.requests)
+                self.assertNotIn(outside, self.requests)
+
+    def test_interrupted_audit_preserves_completed_scores(self):
+        self.routes[self.scope] = ('<a href="about.html">About</a>', 'text/html')
+        self.routes[self.scope + 'about.html'] = ('<h1>About</h1>', 'text/html')
+        with patch.object(site_audit, 'lighthouse_command', return_value=['lighthouse']), patch.object(
+                site_audit, 'page_score', side_effect=[{'score': 100}, KeyboardInterrupt]), redirect_stdout(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                site_audit.audit(self.scope, 9999)
+        run = site_audit.load_scores()['scans'][self.scope]
+        self.assertEqual(run['pages'][self.scope]['score'], 100)
+        self.assertIsNone(run['finished_at'])
+
+    def test_scores_tree_handles_directories_queries_and_failures_offline(self):
+        site.save_json(site_audit.score_path(), {'version': 1, 'scans': {self.scope: {
+            'audited_at': 'saved timestamp', 'finished_at': 'saved timestamp', 'pages': {
+                self.scope + 'about.html': {'score': 87},
+                self.scope + 'about': {'score': 100},
+                self.scope + 'about/team.html?lang=en': {'score': 92},
+                self.scope + 'contact.html': {'score': None, 'error': 'Timed out'},
+            }}}})
+        with patch.object(site, 'build_opener') as network, redirect_stdout(io.StringIO()) as output:
+            site_audit.scores(self.scope)
+        text = output.getvalue()
+        self.assertIn('├── (87) about.html', text)
+        self.assertIn('│   └── (92) team.html?lang=en', text)
+        self.assertIn('(100) about', text)
+        self.assertIn('(error) contact.html', text)
+        network.assert_not_called()
+
+    def test_cli_defaults_and_latest_scope(self):
+        latest = self.scope + 'latest/'
+        data = {'version': 1, 'documents': {}, 'scans': {
+            self.scope: {'scanned_at': '2026-01-01'}, latest: {'scanned_at': '2026-02-01'}}}
+        with patch.object(site, 'load', return_value=data), patch.object(site_audit, 'audit') as audit, patch.object(
+                sys, 'argv', ['site.py', 'audit']), patch.object(sys.stdin, 'isatty', return_value=False):
+            site.main()
+        audit.assert_called_once_with(latest, 9999, chrome=None, interactive=False)
+        with patch.object(site, 'load', return_value=data), patch.object(site, 'scan') as scan, patch.object(
+                site, 'tree'), patch.object(sys, 'argv', ['site.py', 'scan', self.scope, '--scan-only']), patch.object(
+                sys.stdin, 'isatty', return_value=False):
+            site.main()
+        scan.assert_called_once_with(data, self.scope, 9999, interactive=False)
+
+    def test_lighthouse_reports_missing_scores_and_redirects_as_errors(self):
+        client = site.Client(self.scope)
+        def runner(command, **kwargs):
+            report = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--output-path=')))
+            report.write_text(json.dumps(payload))
+            self.assertIn('--only-categories=accessibility', command)
+            return subprocess.CompletedProcess(command, 0)
+        with patch.object(site_audit.subprocess, 'run', side_effect=runner):
+            payload = {'categories': {'accessibility': {'score': .87}}, 'lighthouseVersion': 'test'}
+            self.assertEqual(site_audit.page_score(['lighthouse'], self.scope, client)['score'], 87)
+            for bad in (None, True, -1, 2):
+                payload['categories']['accessibility']['score'] = bad
+                with self.assertRaisesRegex(ValueError, 'did not return an accessibility score'):
+                    site_audit.page_score(['lighthouse'], self.scope, client)
+            payload['categories']['accessibility']['score'] = 1
+            payload['finalDisplayedUrl'] = 'https://outside.edu/'
+            with self.assertRaisesRegex(ValueError, 'redirected outside'):
+                site_audit.page_score(['lighthouse'], self.scope, client)
 
 
 if __name__ == '__main__':
