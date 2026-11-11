@@ -30,3 +30,19 @@
 - If substantial additional work is discovered, describe it briefly and stop
   before doing it.
 - Finish with a short summary of what changed and what was verified.
+
+## Git synchronization
+
+- When the user says "sync", "sync all", or "sync to GitHub", first clarify
+  which changes and destination branch to synchronize, including whether to
+  merge. Then complete the agreed sync and branch cleanup.
+- Push only the agreed branches. "Sync all" does not mean push every local branch.
+- Clear finished task branches after synchronization, both locally and on
+  GitHub where applicable. Before deleting a branch, verify that its work is
+  preserved in the agreed destination and it has no unique work left to retain.
+- Keep the default branch, intentional archive branches, and unfinished work.
+  Do not create another task branch just to carry the same uncommitted changes
+  forward; finish the current task's commit and branch lifecycle first.
+- Report what was synchronized, which branches were removed, and anything
+  that remains unresolved. Do not leave finished branch cleanup as an optional
+  follow-up.
