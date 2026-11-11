@@ -2,6 +2,10 @@
 
 Guidance for Claude Code when working in this repository.
 
+Working constraints and git sync rules (imported, follow them):
+
+@AGENTS.md
+
 ## Project overview
 
 Tooling to make the Montana State University (MSU) Gianforte School of Computing web content accessible and compliant with
@@ -86,7 +90,7 @@ use `dfx <command> --help` for options.
 - `1_download/`, `2_review/`, `3_publish/` — workflow stages (gitignored, local only)
 - `data/` — scan and audit JSON (gitignored)
 - `.pdfignore` — folder URLs excluded from scans/downloads (gitignored, local)
-- `AGENTS.md` — working constraints and git sync rules; follow them
+- `AGENTS.md` — working constraints and git sync rules (imported at the top of this file)
 
 ## Accessibility principles for this project
 
