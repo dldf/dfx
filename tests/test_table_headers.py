@@ -1,4 +1,4 @@
-"""Fallback first-row headers keep table data, continuations, and merged cells."""
+"""Pipe-table headers keep data, continuations, and complex cell relationships."""
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -44,7 +44,7 @@ class TableHeaderTests(unittest.TestCase):
         self.assertEqual(len(soup.select('tbody tr')), 2)
         self.assertIn('Calculus', soup.table.get_text())
         self.assertNotIn('Column 1', soup.get_text())
-        self.assertIn('first row assumed to be the header', log)
+        self.assertNotIn('Table: First row used as header', log)
 
     def test_continuation_reuses_headers_and_keeps_its_first_data_row(self):
         self.grid([['Course', 'Credits'], ['Calculus', '4']])
@@ -55,32 +55,42 @@ class TableHeaderTests(unittest.TestCase):
         self.assertEqual([th.get_text() for th in tables[1].select('thead th')], ['Course', 'Credits'])
         self.assertEqual(len(tables[1].select('tbody tr')), 2)
         self.assertIn('Programming', tables[1].select_one('tbody tr').get_text())
-        self.assertIn('Possible continued table', log)
+        self.assertNotIn('Table: Headings reused', log)
 
-    def test_merged_header_columns_are_preserved(self):
+    def test_merged_header_labels_are_carried_into_each_pipe_column(self):
         page = self.doc.new_page()
         self.cell(page, (50, 50, 250, 90), 'Course details')
         self.cell(page, (250, 50, 350, 90), 'Credits')
         for c, text in enumerate(('CSCI', '101', '3')):
             self.cell(page, (50 + c * 100, 90, 150 + c * 100, 130), text)
         soup, log = self.convert()
-        self.assertEqual(soup.select_one('thead th')['colspan'], '2')
-        self.assertEqual([th.get_text() for th in soup.select('thead th')], ['Course details', 'Credits'])
+        self.assertIsNone(soup.find(attrs={'colspan': True}))
+        self.assertEqual([th.get_text() for th in soup.select('thead th')], ['Course details', 'Course details', 'Credits'])
         self.assertIn('CSCI', soup.select_one('tbody').get_text())
-        self.assertIn('first row assumed to be the header', log)
+        self.assertNotIn('Table: First row used as header', log)
 
-    def test_header_rowspan_does_not_cross_row_groups(self):
+    def test_uncertain_header_rowspan_preserves_source_image_without_invented_cells(self):
         page = self.doc.new_page()
         self.cell(page, (50, 50, 150, 130), 'Group')
         self.cell(page, (150, 50, 250, 90), 'Value')
         self.cell(page, (150, 90, 250, 130), 'First')
         self.cell(page, (50, 130, 150, 170), 'Other')
         self.cell(page, (150, 130, 250, 170), 'Second')
-        soup, _ = self.convert()
-        self.assertIsNone(soup.select_one('thead'))
-        self.assertEqual(soup.select_one('tbody tr th')['rowspan'], '2')
-        self.assertIn('First', soup.table.get_text())
-        self.assertIn('Second', soup.table.get_text())
+        soup, log = self.convert()
+        self.assertIsNone(soup.find('table'))
+        self.assertIsNotNone(soup.find('img'))
+        self.assertIn('Table: Preserved as image', log)
+        self.assertEqual(log.count('| **1** |'), 1)
+        self.assertNotIn('Possibly missing', log)
+        markdown = (self.root / 'out/content.md').read_text()
+        self.assertNotIn('Source row(s)', markdown)
+        self.assertNotIn('Source column(s)', markdown)
+        self.assertNotIn('1-2', markdown)
+        preserved = next((self.root / 'out/assets').glob('*-table-*.png'))
+        with pymupdf.open(self.root / 'table.pdf') as source:
+            expected = source[0].get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5),
+                                          clip=(48, 48, 252, 172))
+        self.assertEqual(pymupdf.Pixmap(str(preserved)).samples, expected.samples)
 
     def test_caption_stays_separate_from_first_header_row(self):
         page = self.doc.new_page()
@@ -92,6 +102,13 @@ class TableHeaderTests(unittest.TestCase):
         self.assertEqual(soup.caption.get_text(), 'Degree requirements')
         self.assertEqual([th.get_text() for th in soup.select('thead th')], ['Course', 'Credits'])
         self.assertEqual(len(soup.select('tbody tr')), 1)
+
+    def test_single_column_header_is_not_removed_as_a_caption(self):
+        self.grid([['Course'], ['Calculus'], ['Programming']])
+        soup, _ = self.convert()
+        self.assertEqual([th.get_text() for th in soup.select('thead th')], ['Course'])
+        self.assertEqual([td.get_text() for td in soup.select('tbody tr > *')],
+                         ['Calculus', 'Programming'])
 
     def test_empty_first_row_does_not_drop_following_data(self):
         self.grid([['', ''], ['Course', 'Credits'], ['Calculus', '4']])

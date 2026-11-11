@@ -95,12 +95,18 @@ def audit(scope, limit, *, chrome=None, interactive=False):
     print('Run dfx site scores to display the saved scores.')
 
 
-def scores(scope):
+def scores(scope, *, below=None):
     run = load_scores()['scans'].get(scope)
     if run is None:
         raise ValueError('No audit saved for this scope. Run dfx site audit first.')
     pages = run['pages']
-    print(f'{scope}    {len(pages)} HTML pages    Audited: {run["audited_at"]}')
+    if below is not None:
+        pages = {url: entry for url, entry in pages.items()
+                 if entry.get('score') is not None and entry['score'] < below}
+    count = f'{len(pages)} HTML pages'
+    if below is not None:
+        count += f' below {below} (of {len(run["pages"])} total)'
+    print(f'{scope}    {count}    Audited: {run["audited_at"]}')
     # Separate leaves from directories so /about and /about/team can coexist.
     root = {'folders': {}, 'pages': []}
     for url, entry in sorted(pages.items()):

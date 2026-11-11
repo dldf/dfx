@@ -5,7 +5,7 @@ __pycache__/
 /data/inventory.json
 /data/pdfs.json
 /data/page_scores.json
-1_downloads/
+1_download/
 2_review/
 3_publish/
 .pdfignore

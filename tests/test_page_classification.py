@@ -97,7 +97,7 @@ class PageClassificationTests(unittest.TestCase):
         self.assertEqual(len(soup.select('img')), 1)
         self.assertEqual(len(soup.select('a[id^="source-page"]')), 3)
         log = (out / 'review/log.md').read_text()
-        self.assertIn('meaningful text description', log)
+        self.assertIn('Image: Description needed', log)
         self.assertIn('[SVG](../assets/page-2.svg)', log)
 
     def test_uncertain_keeps_existing_markdown_with_comparison_link(self):
@@ -179,7 +179,7 @@ class PageClassificationTests(unittest.TestCase):
         out = self.root / 'out'
         convert_pdf(pdf, out)
         self.assertFalse((out / 'assets/page-1.svg').exists())
-        self.assertIn('no OCR stage', (out / 'review/log.md').read_text())
+        self.assertIn('Text: Image only', (out / 'review/log.md').read_text())
         self.assertIn('.png', (out / 'content.md').read_text())
 
     def test_overrides_and_invalid_pages(self):

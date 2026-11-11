@@ -3,7 +3,6 @@
 import argparse
 from collections import Counter
 import hashlib
-from html import escape as html_escape
 import json
 import os
 from pathlib import Path
@@ -17,24 +16,13 @@ import pdfplumber
 import pymupdf
 from bs4 import BeautifulSoup
 
+from .text import clean, escape, format_text
+from .tables import detect_tables, inside, is_page_layout_table, make_table
+from .glyphs import GlyphRepair
+from .review_log import format_review_log, review_issues
 from .review import find_chrome, preview, render_inline_headings
 from .page_classification import classify_page
-from .workflow import PENDING, conversion_destination, diagnostic_only, next_command
-
-
-def clean(text):
-    return ' '.join(re.sub(r'-\s*\n\s*', '-', text or '').split())
-
-
-def escape(text):
-    return re.sub(r'([\\`*_\[\]<>|])', r'\\\1', clean(text))
-
-
-def format_text(text, html=False):
-    """Mark form blanks without interpreting source text as markup."""
-    if html:
-        return re.sub(r'_{4,}', '<span class="blank">---</span>', html_escape(clean(text)))
-    return re.sub(r'(?:\\_){4,}', '[---]{.blank}', escape(text))
+from .workflow import ROOT, PENDING, conversion_destination, diagnostic_only, next_command
 
 
 def infer_document_font(fonts, body_size):
@@ -147,7 +135,7 @@ def mark_highlights(page, text_blocks, drawings):
                 flags = []
                 for char in span['chars']:
                     rect = pymupdf.Rect(char['bbox'])
-                    seqno = sequence.get((char['c'], tuple(round(v, 2) for v in char['origin'])), -1)
+                    seqno = sequence.get((char.get('source_c', char['c']), tuple(round(v, 2) for v in char['origin'])), -1)
                     annotated = any(inside(rect, region) for _, regions in annotations for region in regions)
                     background = any(drawing['seqno'] < seqno
                                      and drawing['rect'].height <= span['size'] * 1.8
@@ -328,11 +316,6 @@ def infer_line_breaks(events):
     return breaks, notes
 
 
-def inside(box, region):
-    x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-    return region[0] <= x <= region[2] and region[1] <= y <= region[3]
-
-
 def is_underline(box, text_blocks):
     if box.height > 2.5 or box.width < 3:
         return False
@@ -346,7 +329,7 @@ def is_underline(box, text_blocks):
 
 
 def is_decoration(drawing, text_blocks, text_traces=()):
-    """Recognize rules, text borders, and colored backgrounds behind text."""
+    """Recognize rules, text borders, and backgrounds painted behind text."""
     items = drawing['items']
     if len(items) != 1:
         return False
@@ -364,9 +347,10 @@ def is_decoration(drawing, text_blocks, text_traces=()):
             and (fill is None or all(channel >= .99 for channel in fill))):
         # Unresolved checkbox-like shapes must not disappear as text borders.
         return False
-    if fill is not None and not all(channel >= .99 for channel in fill):
-        # A highlight can cover only part of a span, and font boxes can extend
-        # beyond the painted letters. Require later text over the background.
+    if fill is not None:
+        # Backgrounds of any color can cover only part of a text span, and
+        # font boxes can extend beyond the painted letters. Require later text
+        # over the rectangle so an opaque cover is not discarded as decoration.
         padded = box + (-1, -1, 1, 1)
         return any(trace['seqno'] > drawing['seqno'] and sum(
             not chr(char[0]).isspace() and padded.contains(pymupdf.Rect(char[3]))
@@ -380,7 +364,12 @@ def extract_checkboxes(drawings, text_blocks, tables, images):
     """Recognize outlined boxes with separate, unambiguous text labels/marks."""
     lines = [line for block in text_blocks for line in block.get('lines', [])]
     events, consumed_spans, consumed_drawings, consumed_tables = [], set(), set(), set()
+    controls = []
     marks = {'x', 'X', '✓', '✔'}
+
+    def matches(a, b):
+        return all(abs(x - y) <= 2 for x, y in zip(a, b))
+
     for drawing in drawings:
         box = pymupdf.Rect(drawing['rect'])
         fill = drawing.get('fill')
@@ -390,10 +379,11 @@ def extract_checkboxes(drawings, text_blocks, tables, images):
                 or not .75 <= box.width / box.height <= 1.35
                 or (fill is not None and not all(channel >= .99 for channel in fill))):
             continue
-        # Only replace a table when it is the checkbox itself, never a cell
-        # inside a larger table. Filled boxes and non-text marks stay for review.
+        # A label background touching a checkbox can create a false two-cell
+        # table. Consider it here, but require matching geometry and a series
+        # before consuming it. Larger grids remain tables.
         touching = [table for table in tables if box.intersects(pymupdf.Rect(table.bbox))]
-        if any(len(table.cells) != 1 or not (box + (-2, -2, 2, 2)).contains(table.bbox)
+        if any(len(table.cells) not in (1, 2) or not any(matches(cell, box) for cell in table.cells)
                for table in touching):
             continue
         if any(box.intersects(pymupdf.Rect(info['bbox'])) for info in images):
@@ -411,8 +401,7 @@ def extract_checkboxes(drawings, text_blocks, tables, images):
             label = clean(''.join(span['text'] for span in line['spans']))
             rect = pymupdf.Rect(line['bbox'])
             if (not spans or label in marks or len(label) > 60 or len(label.split()) > 6
-                    or any(id(span) in consumed_spans for span in spans)
-                    or any(inside(rect, table.bbox) for table in tables)):
+                    or any(inside(rect, table.bbox) for table in tables if table not in touching)):
                 continue
             overlap = min(box.y1, rect.y1) - max(box.y0, rect.y0)
             if overlap < .35 * min(box.height, rect.height):
@@ -424,10 +413,47 @@ def extract_checkboxes(drawings, text_blocks, tables, images):
         if not candidates or (len(candidates) > 1 and candidates[1][0] - candidates[0][0] < 3):
             continue
         _, spans, label = candidates[0]
-        consumed_spans.update(id(span) for span in [*enclosed, *spans])
-        consumed_drawings.add(drawing['seqno'])
-        consumed_tables.update(id(table) for table in touching)
-        events.append((box.y0, box.x0, 'checkbox', f'- [{"x" if enclosed else " "}] {format_text(label)}'))
+        span_ids = {id(span) for span in [*enclosed, *spans]}
+        backgrounds = []
+        valid = True
+        for table in touching:
+            if any(id(span) not in span_ids for line in lines for span in line['spans']
+                   if span['text'].strip() and inside(span['bbox'], table.bbox)):
+                valid = False
+                break
+            for cell in table.cells:
+                if matches(cell, box):
+                    continue
+                background = next((other for other in drawings
+                                   if len(other['items']) == 1 and other['items'][0][0] == 're'
+                                   and matches(other['rect'], cell)
+                                   and all(inside(span['bbox'], cell) for span in spans)), None)
+                if background is None:
+                    valid = False
+                    break
+                backgrounds.append(background['seqno'])
+        if valid:
+            controls.append(dict(box=box, spans=span_ids, tables=touching,
+                                 drawings=[drawing['seqno'], *backgrounds],
+                                 paired=bool(backgrounds),
+                                 text=f'[{"x" if enclosed else " "}] {format_text(label)}'))
+    # Do not assign one label or mark to multiple boxes, even if each box's
+    # nearest-label choice looked unambiguous in isolation.
+    counts = Counter(span for control in controls for span in control['spans'])
+    controls = [control for control in controls if all(counts[span] == 1 for span in control['spans'])]
+    for control in controls:
+        box = control['box']
+        if control['paired'] and not any(
+                other is not control and (
+                    abs(other['box'].y0 - box.y0) <= 3
+                    or (abs(other['box'].x0 - box.x0) <= 3
+                        and abs(other['box'].y0 - box.y0) <= 3 * box.height))
+                for other in controls):
+            continue
+        consumed_spans.update(control['spans'])
+        consumed_drawings.update(control['drawings'])
+        consumed_tables.update(id(table) for table in control['tables'])
+        events.append((box.y0, box.x0, 'checkbox', control['text']))
     # Slightly misaligned boxes on one row still read from left to right.
     row_y = None
     events.sort(key=lambda event: event[:2])
@@ -442,6 +468,27 @@ def words(text):
     text = re.sub(r'</?mark>', '', text)
     text = re.sub(r'!?\[([^\]]*)\]\([^\n]*?\)', r'\1', text)
     return Counter(re.findall(r'\w+', unicodedata.normalize('NFKC', clean(text)).casefold()))
+
+
+def page_number_line(page, blocks, tables, images):
+    """Recognize an isolated printed page number in the bottom tenth."""
+    lines = [line for block in blocks for line in block.get('lines', [])
+             if any(span['text'].strip() for span in line['spans'])]
+    if not lines:
+        return None
+    line = max(lines, key=lambda item: item['bbox'][3])
+    text = clean(''.join(span['text'] for span in line['spans']))
+    box = pymupdf.Rect(line['bbox'])
+    if (not re.fullmatch(r'[0-9]{1,4}', text) or not 1 <= int(text) <= 1000
+            or box.y0 < page.rect.y0 + .9 * page.rect.height
+            or any(box.intersects(pymupdf.Rect(table.bbox)) for table in tables)
+            or any(box.intersects(pymupdf.Rect(info['bbox'])) for info in images)
+            or any(other is not line and min(box.y1, other['bbox'][3]) > max(box.y0, other['bbox'][1])
+                   for other in lines)):
+        return None
+    center = (box.x0 + box.x1) / 2 - page.rect.x0
+    marker = ':---' if center < page.rect.width / 3 else '---:' if center > 2 * page.rect.width / 3 else ':---:'
+    return line, f'{text}\n{marker}'
 
 
 def image(page, assets, name, box=None):
@@ -464,207 +511,19 @@ def page_mode(value):
     return int(match[1]), match[2]
 
 
-def simplify_header_padding(rows, geometry):
-    """Collapse header padding only when every body row defines the same columns."""
-    if len(rows) < 2:
-        return None
-    body = [[(value, cell) for value, cell in zip(row, positions.cells) if cell is not None]
-            for row, positions in zip(rows[1:], geometry[1:])]
-    columns = [(cell[0], cell[2]) for _, cell in body[0]]
-    if not columns or len(columns) >= len(rows[0]):
-        return None
-    for row, positions in zip(body, geometry[1:]):
-        if len(row) != len(columns) or any(
-                abs(cell[0] - left) > .1 or abs(cell[2] - right) > .1
-                or abs(cell[1] - positions.bbox[1]) > .1
-                or abs(cell[3] - positions.bbox[3]) > .1
-                for (_, cell), (left, right) in zip(row, columns)):
-            return None
-    groups = [[] for _ in columns]
-    for value, cell in zip(rows[0], geometry[0].cells):
-        if cell is None:
-            continue
-        matches = [i for i, (left, right) in enumerate(columns)
-                   if left - .1 <= cell[0] and cell[2] <= right + .1]
-        if len(matches) != 1:
-            return None
-        if clean(value):
-            groups[matches[0]].append(value)
-    if not all(len(group) == 1 for group in groups):
-        return None
-    return ([[group[0] for group in groups]] + [[value for value, _ in row] for row in body],
-            [left for left, _ in columns] + [columns[-1][1]])
-
-
-def grid_or_html(html):
-    """Use a grid only if Pandoc preserves cell contents, roles, spans and caption."""
-    def signature(markup):
-        table = BeautifulSoup(markup, 'html.parser').find('table')
-        if table is None:
-            return None
-        return (clean(table.caption.get_text(' ')) if table.caption else '',
-                [[(cell.name, int(cell.get('rowspan', 1)), int(cell.get('colspan', 1)),
-                   clean(cell.get_text(' '))) for cell in row.find_all(['td', 'th'], recursive=False)]
-                 for row in table.find_all('tr')])
-
-    try:
-        grid = subprocess.run(
-            ['pandoc', '--from=html', '--to=markdown-pipe_tables-simple_tables-multiline_tables-smart',
-             '--wrap=none'], input=html, capture_output=True, text=True, check=True, timeout=15).stdout.strip()
-        if grid.startswith('+'):
-            restored = subprocess.run(
-                ['pandoc', '--from=markdown-smart', '--to=html5'], input=grid,
-                capture_output=True, text=True, check=True, timeout=15).stdout
-            if signature(html) == signature(restored):
-                return grid, 'grid'
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return html, 'HTML'
-
-
-def is_page_layout_table(table, page, text_blocks):
-    """Reject a page-sized single body cell containing numbered prose."""
-    box = pymupdf.Rect(table.bbox)
-    if (len(table.columns) != 1 or not 1 <= len(table.rows) <= 2
-            or box.width < page.rect.width * .9 or box.height < page.rect.height * .9):
-        return False
-    body = max((pymupdf.Rect(cell) for cell in table.cells), key=lambda cell: cell.height)
-    if body.height < page.rect.height * .75:
-        return False
-    lines = [clean(''.join(span['text'] for span in line['spans']))
-             for block in text_blocks for line in block.get('lines', [])
-             if inside(line['bbox'], body)]
-    lines = [line for line in lines if line]
-    return len(lines) >= 6 and sum(bool(re.match(r'^\d{1,2}[.)](?:\s|$)', line)) for line in lines) >= 2
-
-
-def make_table(table, previous, page_number, page):
-    rows = table.extract()
-    caption = ''
-    # A merged title row is a caption, not part of the column headings.
-    if len(rows) > 1 and sum(bool(cell) for cell in rows[0]) == 1 and None in rows[0]:
-        caption = clean(next(cell for cell in rows.pop(0) if cell))
-    geometry = table.rows[-len(rows):]
-    simplified = simplify_header_padding(rows, geometry)
-    if simplified:
-        rows, simple_edges = simplified
-    columns = len(rows[0])
-    first = page.get_text('dict', clip=pymupdf.Rect(geometry[0].bbox))
-    spans = [s for b in first['blocks'] for line in b.get('lines', [])
-             for s in line['spans'] if s['text'].strip()]
-    header_bold = sum(len(s['text']) for s in spans if s['flags'] & 16) > sum(len(s['text']) for s in spans) / 2
-    has_header = bool(simplified or header_bold or (caption and all(clean(cell) for cell in rows[0])))
-    # Only use widths when complete rows agree on the column boundaries.
-    grids = [[cell[0] for cell in row.cells] + [row.cells[-1][2]]
-             for row in geometry if all(cell is not None for cell in row.cells)]
-    if simplified:
-        grids = [simple_edges]
-    widths = []
-    if grids and all(len(grid) == columns + 1 and
-                     all(abs(a - b) < 1 for a, b in zip(grid, grids[0])) for grid in grids):
-        edges = grids[0]
-        widths = [round(100 * (b - a) / (edges[-1] - edges[0]), 2)
-                  for a, b in zip(edges, edges[1:])]
-    continuation = (previous and previous['page'] == page_number - 1
-                    and len(previous['header']) == columns and not caption and not header_bold
-                    and abs(previous['bbox'][0] - table.bbox[0]) < 8
-                    and abs(previous['bbox'][2] - table.bbox[2]) < 8)
-    complex_cells = any(None in row for row in rows)
-    empty_header = not any(clean(cell) for cell in rows[0])
-    if complex_cells or (empty_header and not continuation):
-        # Pipe tables cannot preserve spans or a completely empty header row.
-        # Try a lossless grid representation, falling back to HTML.
-        if not caption and has_header:
-            label = next((clean(cell) for cell in rows[0] if clean(cell)), '')
-            caption = 'Table: ' + label if label else ''
-        xs = sorted({cell[0] for cell in table.cells} | {table.bbox[2]})
-        ys = sorted({cell[1] for cell in table.cells} | {table.bbox[3]})
-        metadata = '<!-- table: ' + json.dumps({'widths': widths, 'row_header': 0}) + ' -->'
-        lines = ['<table>']
-        if caption:
-            lines.append(f'<caption>{format_text(caption, html=True)}</caption>')
-        # A rowspan cannot cross from thead into tbody. In that case keep one
-        # row group, with first-row th cells supplying the assumed headers.
-        separate_header = not (len(geometry) > 1 and any(
-            cell and cell[3] > geometry[1].bbox[1] + .1 for cell in geometry[0].cells))
-        for index, (row, positions) in enumerate(zip(rows, geometry)):
-            if index == 0:
-                lines.append('<thead>' if separate_header else '<tbody>')
-            elif index == 1 and separate_header:
-                lines.append('</thead><tbody>')
-            cells = []
-            for value, cell in zip(row, positions.cells):
-                if cell is None:
-                    continue
-                cols = sum(cell[0] - .1 <= x < cell[2] - .1 for x in xs)
-                spans = sum(cell[1] - .1 <= y < cell[3] - .1 for y in ys)
-                attrs = (f' colspan="{cols}"' if cols > 1 else '')
-                attrs += f' rowspan="{spans}"' if spans > 1 else ''
-                tag = 'th' if index == 0 else 'td'
-                cells.append(f'<{tag}{attrs}>{format_text(value, html=True)}</{tag}>')
-            lines.append('<tr>' + ''.join(cells) + '</tr>')
-        lines.append('</thead>' if separate_header and len(rows) == 1 else '</tbody>')
-        lines.append('</table>')
-        text, form = grid_or_html('\n'.join(lines))
-        detail = 'Merged or split cells' if complex_cells else 'Empty first header row'
-        note = f'{detail}: retained as a {form} table. Check inferred headings and header associations.'
-        if not has_header:
-            note += ' No header detected; first row assumed to be the header.'
-        if form == 'HTML':
-            note += ' Grid conversion could not be verified without loss; HTML retained.'
-        return metadata + '\n\n' + text, note, None
-    if continuation:
-        header = previous['header']
-        note = 'Possible continued table: column headings reused from the preceding page; confirm the association.'
-    elif has_header:
-        header = rows.pop(0)
-        note = 'Table structure and column headings inferred; check cell associations.'
-    else:
-        header = rows.pop(0)
-        note = 'No header detected; first row assumed to be the header. Check cell associations.'
-    if not caption and (has_header or continuation):
-        label = next((clean(cell) for cell in header if clean(cell)), '')
-        caption = (previous.get('caption', '') if continuation else '') or ('Table: ' + label if label else '')
-    labels = [clean(row[0]) for row in rows if any(clean(cell) for cell in row)]
-    row_header = int(bool(labels) and all(labels) and len(set(labels)) == len(labels)
-                     and not header[0].startswith('Column '))
-    if row_header:
-        note += ' First column inferred as row headers; confirm or set row_header to 0.'
-    if not widths:
-        note += ' Column boundaries uncertain; automatic layout used.'
-    render = lambda row: '| ' + ' | '.join(format_text(cell) for cell in row) + ' |'
-    text = '<!-- table: ' + json.dumps({'widths': widths, 'row_header': row_header}) + ' -->\n\n'
-    if caption:
-        text += ': ' + format_text(caption) + '\n\n'
-    text += '\n'.join([render(header), '| ' + ' | '.join(['---'] * columns) + ' |',
-                       *[render(row) for row in rows]])
-    return text, note, {'header': header, 'bbox': table.bbox, 'page': page_number, 'caption': caption}
-
-
-def format_review_log(pdf, markdown, page_count, page_notes, document_notes=(), page_svgs=None):
-    """Summarize flagged pages, keeping every warning for each page together."""
-    review = markdown.parent / 'review'
-    source_link = quote(os.path.relpath(pdf.resolve(), review.resolve()), safe='/')
-    content_link = quote(os.path.relpath(markdown.resolve(), review.resolve()), safe='/')
-    lines = [f'# {escape(pdf.stem)}', '',
-             f'[original.PDF]({source_link}) | [content.MD]({content_link}) | [index.HTML](../index.html)', '',
-             '## Document review', '',
-             *['- ' + escape(note) for note in document_notes], '',
-             f'## {page_count} pages, {len(page_notes)} flagged for review:', '',
-             '| Page | Check | Original | Revision |', '| --- | --- | --- | --- |']
-    for number, notes in sorted(page_notes.items()):
-        details = escape(' '.join(' '.join(note.split()) for note in dict.fromkeys(notes)))
-        comparison = f' · [SVG](../{page_svgs[number]})' if page_svgs and number in page_svgs else ''
-        lines.append(f'| **{number}** | {details} | [PDF]({source_link}#page={number}) '
-                     f'| [MD]({content_link}#source-page{number}){comparison} |')
-    return '\n'.join(lines) + '\n'
-
-
-def extract_page_inputs(page, plumb_page, *, skip=False):
+def extract_page_inputs(page, plumb_page, *, skip=False, glyphs=None):
     """Prepare the same classification inputs for conversion and diagnosis."""
     notes = []
+    blocks = page.get_text('rawdict')['blocks'] if not skip else []
+    for block in blocks:
+        for line in block.get('lines', []):
+            for span in line['spans']:
+                span['text'] = ''.join(char['c'] for char in span['chars'])
+    if glyphs is not None and not skip:
+        plumb_page, glyph_notes = glyphs.apply(page.number, blocks, plumb_page)
+        notes.extend(glyph_notes)
     try:
-        detected_tables = plumb_page.find_tables() if not skip else []
+        detected_tables = detect_tables(plumb_page) if not skip else []
     except Exception as exc:
         detected_tables = []
         notes.append(f'Table extraction failed ({type(exc).__name__}); check the page image.')
@@ -672,18 +531,38 @@ def extract_page_inputs(page, plumb_page, *, skip=False):
     if page.rotation or abs(plumb_page.width - page.rect.width) > 1 or page.cropbox != page.mediabox:
         tables = []
         notes.append('Rotated or cropped page: table coordinates may differ; check the page image.')
-    blocks = page.get_text('rawdict')['blocks'] if not skip else []
-    for block in blocks:
-        for line in block.get('lines', []):
-            for span in line['spans']:
-                span['text'] = ''.join(char['c'] for char in span['chars'])
     layout_tables = [table for table in tables if is_page_layout_table(table, page, blocks)]
     if layout_tables:
         tables = [table for table in tables if table not in layout_tables]
         notes.append('Page-sized single-column layout container treated as text; confirm reading order.')
     return dict(blocks=blocks, drawings=page.get_drawings() if not skip else [],
                 images=page.get_image_info() if not skip else [], tables=tables,
-                detected_tables=detected_tables, notes=notes)
+                detected_tables=detected_tables, notes=notes, plumb_page=plumb_page)
+
+
+def original_source_url(pdf, digest):
+    """Use a matching download record; never construct a URL from a filename."""
+    try:
+        inventory = json.loads((ROOT / 'data/pdfs.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    documents = inventory.get('documents') if isinstance(inventory, dict) else None
+    if not isinstance(documents, dict):
+        return None
+    matches = set()
+    for url, record in documents.items():
+        if not isinstance(record, dict) or not isinstance(record.get('local_path'), str):
+            continue
+        try:
+            matches_path = (ROOT / record['local_path']).resolve() == pdf.resolve()
+            parts = urlsplit(url)
+        except (OSError, ValueError):
+            continue
+        if not matches_path or record.get('sha256') != digest:
+            continue
+        if parts.scheme in ('http', 'https') and parts.netloc and not any(char.isspace() for char in url):
+            matches.add(url)
+    return matches.pop() if len(matches) == 1 else None
 
 
 def convert_pdf(pdf, destination, *, page_modes=None):
@@ -712,16 +591,15 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                             fonts[(span['font'], span['flags'], size)] += characters
         body_size = sizes.most_common(1)[0][0] if sizes else 11
         font, font_note = infer_document_font(fonts, body_size)
+        glyphs = GlyphRepair(document, plumb, page_modes)
         assets = destination / 'assets'
         if has_diagnostic and not diagnostic_only(destination):
             raise FileExistsError(f'{destination} changed; nothing converted.')
         destination.mkdir(parents=True, exist_ok=has_diagnostic)
-        assets.mkdir()
         output = [f'---\nfont: {font}\n---', f'<!-- Source: {pdf.name}; SHA-256: {digest} -->']
-        document_notes = ['Headings, reading order, and tables are inferred. '
-                          'Review flagged pages and describe images before publication.']
+        document_notes = []
         if font_note:
-            document_notes.append('Font: ' + font_note)
+            document_notes.append(f'Font: {font} inferred; mixed or uncertain font evidence.')
         previous_table = None
         found_title = False
         flagged_pages = 0
@@ -737,7 +615,7 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                 decision, reason = 'svg', 'Whole-page SVG forced by page override.'
             else:
                 decision, reason = None, None
-            inputs = extract_page_inputs(page, plumb.pages[index], skip=mode == 'svg')
+            inputs = extract_page_inputs(page, plumb.pages[index], skip=mode == 'svg', glyphs=glyphs)
             tables, text_blocks = inputs['tables'], inputs['blocks']
             page_drawings, page_images = inputs['drawings'], inputs['images']
             notes.extend(inputs['notes'])
@@ -758,7 +636,7 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                                    f'<!-- description: desc-{description_number:03d} -->\n\n'
                                    f'![Source page {number}]({path})'])
                     flagged_pages += 1
-                    page_notes[number] = list(dict.fromkeys(notes))
+                    page_notes[number] = review_issues(notes, '\n'.join(output[-3:]), number)
                     review = destination / 'review'
                     review.mkdir(exist_ok=True)
                     image(page, review, f'p{number:03d}-original.png')
@@ -766,7 +644,7 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                 notes.append('Compare the SVG linked in this log with the Markdown before choosing a page mode.')
             elif decision == 'scan':
                 notes.append(reason)
-            text_source = plumb.pages[index].extract_text() or ''
+            text_source = inputs['plumb_page'].extract_text() or ''
             join_bullet_lines(text_blocks)
             text_traces, annotation_drawings = mark_highlights(page, text_blocks, page_drawings)
             checkbox_events, checkbox_spans, checkbox_drawings, checkbox_tables = extract_checkboxes(
@@ -775,11 +653,14 @@ def convert_pdf(pdf, destination, *, page_modes=None):
             if checkbox_events:
                 notes.append('Checkbox states and labels inferred from position; confirm the selected answers.')
             tables = [table for table in tables if id(table) not in checkbox_tables]
+            footer = page_number_line(page, text_blocks, tables, page_images)
             boxes = [table.bbox for table in tables]
             for table in tables:
                 events.append((table.bbox[1], table.bbox[0], 'table', table))
             for block in text_blocks:
                 for line in block.get('lines', []):
+                    if footer and line is footer[0]:
+                        continue
                     remaining = [s for s in line['spans'] if id(s) not in checkbox_spans]
                     nonempty = [i for i, s in enumerate(remaining) if s['text'].strip()]
                     if not nonempty or any(inside(line['bbox'], box) for box in boxes):
@@ -832,7 +713,7 @@ def convert_pdf(pdf, destination, *, page_modes=None):
             for link in page.get_links():
                 if link.get('uri'):
                     uri = link['uri']
-                    label_lines = page.get_textbox(link['from']).splitlines()
+                    label_lines = glyphs.textbox(page, link['from']).splitlines()
                     label = clean(label_lines[0]) if label_lines else ''
                     if urlsplit(uri).scheme.lower() in ('http', 'https', 'mailto'):
                         links.append((label, quote(uri, safe=':/?#@!$&\'*,;=+%~-._')))
@@ -872,14 +753,23 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                     flush()
                     list_stack.clear()
                     md, warning, state = make_table(value, previous_table if event_index == 0 else None, number, page)
+                    if md is None:
+                        description_number += 1
+                        box = (pymupdf.Rect(value.bbox) + (-2, -2, 2, 2)) & page.rect
+                        path = image(page, assets, f'page-{number}-table-{event_index + 1}.png', box)
+                        md = (f'<!-- description: desc-{description_number:03d} -->\n\n'
+                              f'![Source image on page {number}]({path})')
                     page_parts.append(md)
-                    notes.append(warning)
+                    notes.append((warning, md))
                     previous_table = state
                     prior = None
                 elif kind == 'checkbox':
                     flush()
                     list_stack.clear()
-                    page_parts.append(value)
+                    if event_index and ordered[event_index - 1][2] == 'checkbox':
+                        page_parts[-1] += '\\\n' + value
+                    else:
+                        page_parts.append(value)
                     prior = None
                 elif kind == 'image':
                     flush()
@@ -950,22 +840,20 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                 if uri not in used_links:
                     page_parts.append(f'[{format_text(label or "Source link")}]({uri})')
                     notes.append('A link was retained separately; confirm its placement.')
-            if len(text_source.strip()) < 30:
-                notes.append('Little or no extractable text. Page image preserved; this converter has no OCR stage. '
-                             'OCR or transcription is needed.')
+            if footer:
+                page_parts.append(footer[1])
+                # The standalone footer ends the Markdown list on this page.
+                list_stack.clear()
+            if len(text_source.strip()) < 30 and not (footer and text_source.strip() == footer[1].splitlines()[0]):
+                notes.append('Little or no extractable text. Page image preserved; targeted glyph verification '
+                             'does not transcribe scanned pages. Full-page OCR or transcription is needed.')
             if '\ufffd' in text_source or '\ufffd' in '\n'.join(page_parts):
                 notes.append('Unrecognized characters found; compare with the page image.')
-            missing = words(text_source) - words('\n'.join(page_parts))
-            missing['o'] -= sum(value['bullet']['symbol'] == 'o' for _, _, kind, value in ordered
-                                if kind == 'text' and value['bullet'])
-            missing = +missing
-            if missing:
-                sample = ', '.join(f'{word} ({count})' for word, count in list(missing.items())[:12])
-                notes.append(f'Possible text loss compared with independent extraction: {sample}. Check the page image.')
             if previous_table and (not ordered or ordered[-1][2] != 'table'):
                 previous_table = None
             output.append(page_indent + f'<!-- Source page {number} -->')
             output.append(page_indent + f'<a id="source-page{number}"></a>')
+            notes = review_issues(notes, '\n\n'.join(page_parts) + f'\n<a id="source-page{number}"></a>', number)
             if notes:
                 flagged_pages += 1
                 page_notes[number] = list(dict.fromkeys(notes))
@@ -974,6 +862,12 @@ def convert_pdf(pdf, destination, *, page_modes=None):
                 image(page, review, f'p{number:03d}-original.png')
             output.extend(page_parts)
         markdown = destination / 'content.md'
+        source_url = original_source_url(pdf, digest)
+        if source_url:
+            delimiter = '`' * (max((len(run) for run in re.findall(r'`+', source_url)), default=0) + 1)
+            output.append(f'This page was converted from {delimiter}{source_url}{delimiter}')
+        else:
+            document_notes.append('Source: Original URL unavailable; no unique matching download record.')
         review = destination / 'review'
         review.mkdir(exist_ok=True)
         (review / 'log.md').write_text(
@@ -1061,7 +955,8 @@ def convert_latex(tex, destination):
         raise ValueError('LaTeX source changed during conversion; retry.')
     # Finish parsing and validating assets before creating any output.
     destination.mkdir(parents=True, exist_ok=diagnostic_only(destination))
-    (destination / 'assets').mkdir()
+    if assets:
+        (destination / 'assets').mkdir()
     (destination / 'review').mkdir(exist_ok=True)
     for name, data in assets:
         (destination / 'assets' / name).write_bytes(data)

@@ -19,7 +19,7 @@ class ReviewSourceTests(unittest.TestCase):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        self.pdf = self.make_pdf('1_downloads/reports/report.v2.PDF', 'Original source')
+        self.pdf = self.make_pdf('1_download/reports/report.v2.PDF', 'Original source')
         self.original = self.pdf.read_bytes()
         self.markdown = self.root / '2_review/reports/report.v2/content.md'
         self.markdown.parent.mkdir(parents=True)
@@ -66,7 +66,7 @@ class ReviewSourceTests(unittest.TestCase):
 
     def test_mismatched_expected_pdf_does_not_override_matching_fallback(self):
         self.pdf.unlink()
-        self.make_pdf('1_downloads/reports/report.v2.PDF', 'Wrong source')
+        self.make_pdf('1_download/reports/report.v2.PDF', 'Wrong source')
         matching = self.copy_source('2_review/backup/report.v2.pdf')
         self.assertEqual(review.resolve_source(self.markdown), matching)
 

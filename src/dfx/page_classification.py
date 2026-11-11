@@ -139,7 +139,7 @@ def classify_signals(s):
     passed = {group['key']: group['passed'] for group in classification_checks(s)}
     if passed['scan']:
         return 'scan', ('Likely scanned/image-only page: a bitmap covers most of the page with little '
-                        'extractable text. This converter has no OCR stage; OCR or transcription is '
+                        'extractable text. This converter has no full-page OCR stage; OCR or transcription is '
                         'required to determine and recover its text. Bitmap artwork is also possible.')
     reason = (f"{s['shapes']} substantial shapes, {s['connections']} connections between shapes, "
               f"{s['coverage']:.0%} composition coverage, {s['short_labels']:.0%} short text lines, "

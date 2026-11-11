@@ -13,7 +13,7 @@ def project_root():
 
 
 ROOT = project_root()
-DOWNLOADS = '1_downloads'
+DOWNLOADS = '1_download'
 PENDING = '2_review'
 READY = '3_publish'
 DIAGNOSTIC = 'diagnostic.md'
@@ -67,5 +67,24 @@ def document_present(folder):
         return False
     if any(path.is_file() for path in folder.glob('*.md')):
         return True
-    return all((folder / name).is_file() for name in (
-        'index.html', 'assets/main.css', 'assets/_pdf2md/content.md', 'assets/_pdf2md/log.md'))
+    return any((folder / name).is_file() for name in ('index.html', 'frompdf.html'))
+
+
+def review_documents(folder, root=ROOT):
+    pending = (root / PENDING).resolve()
+    folder = folder.resolve()
+    if not folder.is_dir() or not folder.is_relative_to(pending):
+        raise ValueError(f'Choose an existing folder under {pending}.')
+    documents = []
+    for directory, children, files in os.walk(folder, followlinks=False):
+        path = Path(directory)
+        is_document = path != pending and 'content.md' in files and not (path / 'content.md').is_symlink()
+        children[:] = sorted(name for name in children
+                             if not (is_document and name in ('assets', 'review'))
+                             and not name.startswith('.dfx-rebuild-')
+                             and not (path / name).is_symlink())
+        if is_document:
+            documents.append(path)
+    if not documents:
+        raise ValueError('No review documents with content.md found in this folder.')
+    return documents

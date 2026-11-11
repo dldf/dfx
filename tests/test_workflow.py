@@ -73,7 +73,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(conversion_destination(pdf, pdf.parent, custom, self.root), custom / pdf.stem)
 
     def test_scan_limit_alias_and_default(self):
-        for options, expected in (([], 250), (['--max-urls', '100'], 100), (['--max-pages', '100'], 100)):
+        for options, expected in (([], 9999), (['--max-urls', '100'], 100), (['--max-pages', '100'], 100)):
             with self.subTest(options=options), patch.object(sys, 'argv', ['site.py', 'scan', 'https://example.edu/reports/', '--scan-only', *options]), patch.object(site, 'load', return_value={'scans': {}}), patch.object(site, 'scan') as scan, patch.object(site, 'tree'), patch.object(site, 'download') as download:
                 site.main()
                 self.assertEqual(scan.call_args.args[2], expected)
@@ -110,7 +110,7 @@ class VerifyTests(unittest.TestCase):
         (self.source / 'assets/figure.png').write_bytes(b'example image bytes')
         (self.source / 'assets/empty').mkdir()
         (self.source / 'review').mkdir()
-        (self.source / 'review/log.md').write_text('Review notes to be deleted intentionally.')
+        (self.source / 'review/log.md').write_text('Review notes to retain.')
         self.destination = self.root / READY / 'example.edu' / 'report'
         self.before = stage.snapshot(self.source, 'content.md', 'preview.html')
 
@@ -118,19 +118,26 @@ class VerifyTests(unittest.TestCase):
         self.assertEqual(stage.snapshot(self.source, 'content.md', 'preview.html'), self.before)
         self.assertTrue((self.source / 'review/log.md').is_file())
 
-    def test_success_prompts_moves_unchanged_files_and_leaves_two_line_receipt(self):
+    def publication_unchanged(self):
+        expected = {name: digest for name, digest in self.before.items() if name.startswith('assets/')}
+        expected['frompdf.html'] = self.before['html']
+        self.assertEqual(stage.tree_snapshot(self.destination), expected)
+
+    def test_success_moves_publication_and_retains_markdown_and_log(self):
         with patch('builtins.input', return_value='Jane Smith') as prompt:
             result = stage.verify_document(self.markdown, root=self.root)
         prompt.assert_called_once()
         self.assertEqual(result, self.destination)
-        self.assertEqual(stage.snapshot(result, 'content.md', 'frompdf.html'), self.before)
+        self.publication_unchanged()
         self.assertFalse((result / 'preview.html').exists())
         self.assertFalse((result / 'review').exists())
-        self.assertEqual([path.name for path in self.source.iterdir()], ['ready_to_publish.txt'])
-        lines = (self.source / 'ready_to_publish.txt').read_text().splitlines()
-        self.assertEqual(len(lines), 2)
-        self.assertRegex(lines[0], r'^Reviewed by "Jane Smith"; on "\d{4}-\d{2}-\d{2}" at "\d{2}:\d{2}:\d{2} [+-]\d{4}"\.$')
-        self.assertEqual(lines[1], self.destination.as_uri() + '/')
+        self.assertEqual({path.relative_to(self.source).as_posix() for path in self.source.rglob('*') if path.is_file()},
+                         {'content.md', 'review/log.md'})
+        self.assertIn('../../../3_publish/example.edu/report/assets/figure.png', self.markdown.read_text())
+        log = (self.source / 'review/log.md').read_text()
+        self.assertIn('Review notes to retain.', log)
+        self.assertRegex(log, r'Reviewed by "Jane Smith"; staged on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}\.')
+        self.assertIn('[HTML](../../../../3_publish/example.edu/report/frompdf.html)', log)
 
     def test_destination_conflict_stops_before_name_prompt(self):
         self.destination.mkdir(parents=True)
@@ -161,25 +168,26 @@ class VerifyTests(unittest.TestCase):
         self.assertFalse(self.destination.exists())
         self.assertTrue((self.source / 'review/log.md').exists())
 
-    def test_receipt_failure_leaves_ready_copy_and_all_originals(self):
-        with patch('dfx.stage.write_receipt', side_effect=OSError('permission denied')), self.assertRaisesRegex(RuntimeError, 'Ready copy is complete'):
+    def test_metadata_failure_leaves_ready_copy_and_all_originals(self):
+        with patch('dfx.stage.write_metadata', side_effect=OSError('permission denied')), self.assertRaisesRegex(RuntimeError, 'Ready copy is complete'):
             stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.unchanged()
-        self.assertEqual(stage.snapshot(self.destination, 'content.md', 'frompdf.html'), self.before)
+        self.publication_unchanged()
 
-    def test_interrupted_cleanup_preserves_complete_ready_copy_and_receipt(self):
+    def test_interrupted_cleanup_preserves_complete_ready_copy_and_metadata(self):
         remove = shutil.rmtree
         def interrupt(path, *args, **kwargs):
-            if Path(path) == self.source / 'review':
-                raise PermissionError('review locked')
+            if Path(path) == self.source / 'assets':
+                raise PermissionError('assets locked')
             return remove(path, *args, **kwargs)
         with patch('dfx.stage.shutil.rmtree', side_effect=interrupt), self.assertRaisesRegex(RuntimeError, 'Cleanup was interrupted'):
             stage.verify_document(self.markdown, 'Jane', root=self.root)
-        self.assertEqual(stage.snapshot(self.destination, 'content.md', 'frompdf.html'), self.before)
-        self.assertTrue((self.source / 'ready_to_publish.txt').is_file())
+        self.publication_unchanged()
+        self.assertTrue(self.markdown.is_file())
+        self.assertFalse((self.source / 'ready_to_publish.txt').exists())
         self.assertTrue((self.source / 'review/log.md').is_file())
 
-    def test_incomplete_install_does_not_publish_markdown(self):
+    def test_incomplete_install_does_not_install_html(self):
         link = Path.hardlink_to
         def interrupt(path, target):
             if path == self.destination / 'frompdf.html':
@@ -189,6 +197,7 @@ class VerifyTests(unittest.TestCase):
             stage.verify_document(self.markdown, 'Jane', root=self.root)
         self.unchanged()
         self.assertFalse((self.destination / 'content.md').exists())
+        self.assertFalse((self.destination / 'frompdf.html').exists())
 
     def test_missing_asset_and_blank_name_stop_without_destination(self):
         with self.assertRaisesRegex(ValueError, 'nonempty reviewer'):
@@ -216,7 +225,9 @@ class VerifyTests(unittest.TestCase):
         self.markdown.write_text('# Plain document')
         (self.source / 'preview.html').write_text('<h1>Plain document</h1>')
         destination = stage.verify_document(self.markdown, 'Jane', root=self.root)
-        self.assertTrue((destination / 'content.md').is_file())
+        self.assertTrue(self.markdown.is_file())
+        self.assertTrue((destination / 'frompdf.html').is_file())
+        self.assertFalse((destination / 'content.md').exists())
         self.assertFalse((destination / 'assets').exists())
 
 

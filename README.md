@@ -1,41 +1,20 @@
-# DFX
-## Document Format eXchange
+# DFX — Document Format eXchange
 
-Convert PDFs into editable Markdown drafts, with HTML previews and paired
-original/revised page images for review. An optional website scanner discovers
-PDFs, downloads them with confirmation, and tracks review status.
+Convert PDFs and LaTeX into editable Markdown and HTML for review and publication.
+DFX runs locally without an AI service or API key. Review converted content before
+publishing; conversion alone does not establish accessibility.
 
-The tools run locally without an AI service or API key. Conversion infers document
-structure; it does not perform OCR, automatically reconstruct diagrams, or certify
-accessibility. Review the Markdown against the original before publishing it.
+## Setup
 
-## Requirements
-
-- **Python 3.11 or newer**, with `pip` and `venv`. See the
-  [Python downloads](https://www.python.org/downloads/) and
-  [virtual-environment instructions](https://docs.python.org/3/library/venv.html).
-- **Pandoc**, available on your `PATH`. Pandoc 3.8 is the tested version;
-  use a recent release for grid tables with merged cells. Follow the
-  [Windows, macOS, or Linux installation instructions](https://pandoc.org/installing.html).
-- **Google Chrome or Chromium**, used in headless mode to make review images.
-  Install [Chrome](https://www.google.com/chrome/) or use your Linux distribution's
-  Chromium package.
-- **Git**, if cloning the repository. Downloading and extracting its ZIP is another option.
-
-The workflow has been tested on macOS with Python 3.14, Pandoc 3.8, and Chrome.
-Windows and Linux setup commands are provided below; those platforms have not
-been verified end to end.
-
-## Get the project
+Install **Python 3.11+**, [Pandoc](https://pandoc.org/installing.html), and
+[Chrome](https://www.google.com/chrome/) or Chromium. Pandoc must be on your `PATH`.
 
 ```sh
 git clone https://github.com/dldf/dfx.git
 cd dfx
 ```
 
-If you downloaded a ZIP, open a terminal in its extracted project folder instead.
-
-### macOS and Linux
+On macOS or Linux:
 
 ```sh
 python3 -m venv .venv
@@ -43,10 +22,7 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-Some Linux distributions package `venv` separately; install the package for your
-Python version if environment creation reports that it is missing.
-
-### Windows PowerShell
+On Windows PowerShell:
 
 ```powershell
 py -3 -m venv .venv
@@ -54,246 +30,122 @@ py -3 -m venv .venv
 python -m pip install -e .
 ```
 
-If PowerShell blocks activation, use Command Prompt instead:
+Run commands from the project folder. Activate the environment in each new
+terminal, or use `.venv/bin/dfx` on macOS/Linux and `.\.venv\Scripts\dfx.exe`
+on Windows. Recreate `.venv` if you move the project folder.
 
-```bat
-py -3 -m venv .venv
-.venv\Scripts\activate.bat
-python -m pip install -e .
-```
-
-Activation is optional: substitute `.venv/bin/dfx` on macOS/Linux or
-`.\.venv\Scripts\dfx.exe` on Windows for `dfx`. For commands starting with
-`python`, use `.venv/bin/python` or `.\.venv\Scripts\python.exe`.
-This avoids changing PowerShell execution policies. If `py` is unavailable,
-use the command for your installed Python 3.11+ interpreter.
-
-Run `python --version` and `pandoc --version` to check setup. Reactivate the
-virtual environment in each new terminal. Recreate `.venv` if you move or rename
-the project folder; virtual environments contain absolute paths.
-
-The install command reads dependencies from `pyproject.toml` and adds `dfx` to
-the environment. Existing users should run `python -m pip install -e .` once.
-The editable installation uses the code in this project folder.
-
-Application code lives in `src/dfx/`; tests remain in `tests/`. Run commands
-from the project folder so relative input and output paths use that folder.
-Editable installations also use this checkout for inventory and workflow tracking;
-regular installations use the working directory. The stylesheet is bundled with
-the package.
-
-Use `dfx convert "1_downloads/document.pdf"` and
-`dfx stage "2_review/document/content.md"` in place of the former
-`python convert.py` and `python stage.py` commands, with the same arguments
-and options.
-
-## Convert a PDF
-
-Place a PDF at `1_downloads/document.pdf`, or substitute the path to your own file.
-Quote paths containing spaces. From the project folder, run:
-
-```sh
-dfx convert "1_downloads/document.pdf"
-```
-
-This creates `2_review/document/` containing:
-
-| Path | Purpose |
-| --- | --- |
-| `content.md` | Document content, invisible page comments, and page anchors |
-| `assets/` | Always present; extracted figures and `main.css` |
-| `review/log.md` | Document guidance and page-specific review notes |
-| `index.html` | Browser preview generated from Markdown |
-| `review/p001-original.png`, `review/p001-revised.png`, ... | Paired page images |
-
-Reusable command examples are in [the macOS/Linux guide](docs/commands_mac.md)
-and [the Windows guide](docs/commands_win.md). These shared guides replace
-per-document command files in `review/`.
-
-Conversion generates the initial HTML and paired review images automatically.
-Styles are linked from `assets/main.css`; inline style attributes are retained.
-After each successful conversion, the terminal prints a `dfx review` command to
-copy and paste. It does not wait for confirmation or run the next step.
-A folder input converts
-PDFs recursively. The default output root is `2_review/`. Converting a
-PDF or subfolder within `1_downloads/` preserves its path relative to that root
-when writing to `2_review/`, so single and batch conversions agree.
-Existing document folders are protected from overwriting; choose a custom output
-root for another conversion. Custom roots are outside automatic status tracking.
-If preview generation fails after extraction, the saved Markdown remains available.
-
-### Page classification and SVG overrides
-
-Conversion automatically keeps ordinary prose, tables, and mixed pages as
-Markdown. Obvious diagram/artwork pages are preserved as one whole-page SVG in
-`assets/`, with an image reference at the original page position. SVG text is
-outlined to preserve appearance; it is not selectable, accessible text. Add a
-meaningful description or text equivalent before publication. Page markers and
-anchors remain in the Markdown.
-
-For a single PDF, override individual pages using 1-based page numbers:
-
-```sh
-dfx convert "1_downloads/document.pdf" --page-mode 1=svg
-dfx convert "1_downloads/document.pdf" "2_review/retry" --page-mode 1=markdown --page-mode 3=svg
-```
-
-Modes are `auto` (the default), `markdown` (the existing extraction path), and
-`svg` (the entire page, with no separate text, tables, or image fragments).
-For example, `--page-mode 1=auto` explicitly selects automatic classification.
-Repeat the option for different pages; each page may be specified once. Overrides
-require a single PDF input, not a folder. Choose a fresh output root when retrying;
-existing conversion folders are never overwritten.
-
-Classification combines aligned paragraph-length text, short labels distributed
-across the page, their overlap with shapes, connections between shapes, composition
-coverage, and table-cell geometry. Starting thresholds include at least eight
-substantial shapes, three connections, and 50% composition coverage for a labelled
-diagram, together with predominantly short, scattered labels inside shapes.
-Aligned prose and regular multi-row table cells weigh against automatic SVG.
-Extensive unlabelled vector artwork uses a separate geometry check. These are
-conservative heuristics calibrated on assessment reports and an advising diagram,
-not reliable rules for every PDF; count or text presence alone is insufficient.
-
-Uncertain pages retain their current Markdown and get a comparison SVG linked
-from `review/log.md`, without adding a duplicate page image to the Markdown.
-The log records the classification evidence and required review. Mixed-page
-figures still use the existing extraction behavior; this does not segment figures.
-False negatives and unusual layouts remain possible; use an override after review.
-
-A nearly full-page bitmap with little extractable text is treated as a possible
-scan, not automatically as vector artwork. Its existing image handling is retained
-and the log explicitly reports that this converter has no OCR stage. OCR or
-transcription is needed; a bitmap alone cannot establish whether it contains prose
-or artwork. All classification and export run locally without AI API calls or
-additional dependencies.
-
-### Selecting Chrome or Chromium
-
-The tools look for `google-chrome` or `chromium` on `PATH`, then the usual macOS
-Chrome application. On Windows, or for another installation location, supply
-`--chrome` to both conversion and preview commands. For a common Windows install:
+If Chrome is not found, add `--chrome` with its executable path to `convert`,
+`review`, `rebuild`, or `site audit`. For example:
 
 ```powershell
-dfx convert "1_downloads/document.pdf" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
+dfx review "2_review/document" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
 ```
 
-Use the actual executable path on your computer. A per-user Windows installation
-or a Linux executable named `chromium-browser` may need a different path.
+The workflow has been tested on macOS. Windows and Linux have not been verified
+end to end.
+
+## Convert
+
+Place source files in `1_download/`, then convert one PDF or a folder of PDFs:
+
+```sh
+dfx convert "1_download/document.pdf"
+dfx convert 1_download
+```
+
+A single `.tex` file is also accepted. Output goes into matching folders under
+`2_review/`. Each document contains:
+
+| File | Purpose |
+| --- | --- |
+| `content.md` | Editable content and source page markers |
+| `index.html` | HTML with embedded styles |
+| `assets/` | Figures and other page assets |
+| `review/log.md` | Source links and issues to check |
+| `review/p001-original.png`, `review/p001-revised.png`, … | Page comparisons |
+
+Existing document folders are protected from overwriting. To use another output
+root, supply it as the second argument. Quote paths containing spaces.
+
+DFX extracts PDF text directly. Optional Tesseract checks can verify suspect
+character mappings; scanned pages still need OCR or transcription.
+
+### Page overrides
+
+For a single PDF, choose `auto`, `markdown`, or `svg` for individual pages:
+
+```sh
+dfx convert "1_download/document.pdf" --page-mode 1=markdown --page-mode 3=svg
+```
+
+Automatic classification preserves diagram pages as SVG. SVG text is outlined;
+add a text equivalent where needed. Page numbers are 1-based.
 
 ## Review and edit
 
-Open `review/log.md` for review guidance and the list of flagged pages. Each flagged
-page lists what to check, with links to the source PDF page and the Markdown page anchor.
-A flag means the converter found something that needs human review; it does not
-necessarily mean the conversion is wrong.
+Read `review/log.md`, compare the page images, and edit `content.md`. The log's
+**Possible Issue** column explains each flag; **Check** gives text to find in the
+Markdown.
 
-Edit `2_review/document/content.md`, then refresh the preview:
+Refresh the HTML and comparison images after editing:
 
 ```sh
-dfx review "2_review/document/"
+dfx review "2_review/document" --inspect
 ```
 
-On Windows, include the browser path again:
+`--inspect` opens the HTML in your browser. Review reading order, wording, tables,
+image descriptions, keyboard access, and screen-reader output. Keep source page
+markers, anchors, and image description IDs intact.
 
-```powershell
-dfx review "2_review/document/" --chrome "C:\Program Files\Google\Chrome\Application\chrome.exe"
+The review command locates the original source and checks its recorded hash.
+If it cannot locate the source, it asks for the path.
+
+### Editing details
+
+- **Images:** replace the placeholder inside `![description](assets/image.png)`
+  with meaningful alt text. Each image needs a unique `<!-- description: ID -->`.
+- **Tables:** the converter uses Markdown pipe tables and can split complicated
+  structures into multiple tables. Ambiguous cell relationships are preserved as
+  images for review. Check captions and column associations.
+- **Table layout:** edit `<!-- table: {"widths": [40, 60], "row_header": 1} -->`.
+  Widths are proportions; `[]` uses automatic layout. Set `row_header` to `0` when
+  the first column contains ordinary data.
+- **Fonts:** set `font: serif` or `font: sans` in the Markdown's YAML front matter.
+
+## Rebuild from downloaded sources
+
+Reconvert the documents already present in `2_review/`:
+
+```sh
+dfx rebuild 2_review
 ```
 
-The review command locates the original PDF under `1_downloads/` using the
-matching document path. If that does not identify the source, it searches
-`2_review/` recursively for PDFs with the document folder's name.
-For example, `2_review/reports/file/content.md` matches
-`1_downloads/reports/file.pdf`. PDF extensions such as `.PDF` are also supported.
-The recorded source hash validates candidates and distinguishes different PDFs
-with the same name. Without a hash, multiple matches require your input.
+A subfolder or individual document folder also works. Rebuild replaces Markdown
+edits, assets, logs, HTML, and previews using the matching sources in `1_download/`.
+It does not make backups. Use `dfx review` to render edits without reconverting.
 
-If automatic lookup fails, the command prompts for the original PDF's path.
-Enter a path (quoted paths are accepted), or press Enter without typing anything
-to cancel. Ctrl+C also cancels during lookup. Lookup and cancellation happen
-before any review files are changed. Noninteractive runs stop with an error when
-a path is needed. Custom or renamed document folders may require the prompt.
-There is no `--source` option.
+## Stage for publication
 
-Use `dfx review` in place of the former `python review.py` command.
+After the final review, stage every document under `2_review/`:
 
-Folder arguments select the `content.md` inside that document folder; explicit
-Markdown paths are also accepted. Review rebuilds HTML and paired images without
-editing Markdown or prompting for titles or image descriptions. After successful
-review of a document under `2_review/`, the terminal prints the `dfx stage`
-command to copy and paste. It does not run staging automatically.
-
-Append `--inspect` to open the saved HTML, or open `index.html` yourself.
-It remains available after the command finishes. Rerun preview and refresh the
-browser after editing Markdown.
-
-Sort the PNGs by filename in an image viewer to compare original/revised pairs.
-Revised pages may be taller to preserve content. Check reading order, wording,
-lists, tables, and image descriptions; exact visual matching is not the goal.
-Use the HTML for keyboard and screen-reader review. PNGs cannot verify those
-interactions, and a successful conversion does not establish accessibility.
-
-Keep the `<!-- Source page N -->` markers and page anchors in the Markdown.
-Keep any `assets/` directory beside `content.md`. Preview generation preserves
-Markdown and checks that the source PDF matches the recorded hash.
-
-### Fonts, emphasis, and line breaks
-
-The converter preserves detected bold and italic text, represents detected highlights
-with `<mark>`, and infers serif or sans
-from the predominant body font. You can override the choice at the top of Markdown:
-
-```yaml
----
-font: serif
----
+```sh
+dfx stage 2_review
 ```
 
-Use `serif` or `sans`. This selects a family, not an exact PDF font. Intentional
-line breaks are inferred conservatively; ambiguous cases are flagged for review.
-Nested lists and unusual layouts may still need manual correction.
+You can also supply a subfolder or one document. The command asks for your name
+once, then:
 
-### Images
+- Moves verified HTML and assets into matching folders under `3_publish/`.
+- Keeps `content.md` and `review/log.md` in `2_review/`, updating links and recording
+  the reviewer in the log.
+- Removes generated previews after verifying the staged copy.
+- Skips existing destinations and reports failures while processing other documents.
 
-Each figure has a stable description ID. Find it in Markdown and replace the
-placeholder inside `![...]` with a meaningful description:
+Staging prepares local files; upload the contents of `3_publish/` to publish them.
 
-```md
-<!-- description: desc-001 -->
+## Website tools
 
-![A description of what the figure communicates.](assets/figure-1.png)
-```
-
-Keep IDs unique. Add an unused ID immediately before each manually added image.
-Descriptions become image alt text. Reviewer-only labels are not added to the HTML;
-use `review/log.md` for review guidance.
-
-### Tables
-
-The converter prefers pipe tables, then grid tables for merged cells, and HTML
-when a grid cannot preserve the extracted structure. Existing captions are
-preserved; otherwise a detected first column heading supplies the caption.
-Confirm that the resulting title describes the table.
-
-Table metadata is editable:
-
-```md
-<!-- table: {"widths": [25, 25, 30, 10, 10], "row_header": 1} -->
-```
-
-Widths are proportions, one per actual column; `[]` permits automatic layout.
-For simple tables, `row_header: 1` makes the first column row headers; use `0` for
-ordinary data. Pandoc captions use a line such as `: Table: Program Learning Outcomes`
-above the pipe table, separated by a blank line. Captions above or below the table
-render identically in HTML. Grid-table borders must stay aligned in a monospaced editor.
-
-Merged cells and complex header relationships still need human review. Simplify
-where appropriate, or use HTML with suitable `th`, `scope`, `rowspan`, `colspan`,
-and `id`/`headers` associations. Image-only or undetected tables need reconstruction.
-
-## Optional: discover PDFs on a website
-
-Replace `https://example.edu/department/` with the website folder you want to search:
+Discover PDFs within a website folder and download them after confirmation:
 
 ```sh
 dfx site scan "https://example.edu/department/"
@@ -301,174 +153,52 @@ dfx site tree
 dfx site download
 ```
 
-These commands:
+Downloads preserve the hostname and website path under `1_download/`. Files already
+in the workflow are skipped. `site tree` shows the highest local stage:
+**[1] Downloaded**, **[2] Pending Review**, or **[3] Ready to Publish**.
 
-1. Follow links within the website folder to discover PDFs, then offer to download them. Add `--scan-only` to skip the download prompt, or `--max-urls 100` to limit the scan to 100 visited URLs.
-2. Display discovered PDFs and their local workflow status in a tree diagram.
-3. Ask for confirmation before downloading PDFs into the local `1_downloads/` folder. This step is unnecessary if you already downloaded them during the scan.
+Scans follow `robots.txt` and visit up to 9999 URLs by default. Use `--max-urls` to
+change the limit, `--scan-only` to save results without offering downloads, or
+`--folders` to list PDF folders and counts without saving a scan. Unlinked files
+and JavaScript-generated links may be missed.
 
-The scan visits up to **9999 URLs by default**, including pages and PDFs. Increase `--max-urls` to search further. It follows the website’s automated-access rules in `robots.txt` and may miss unlinked files or links generated by JavaScript, so it cannot guarantee finding every PDF.
-
-The older `--max-pages` option remains an alias for `--max-urls`.
-Downloads go under `1_downloads/<hostname>/<website-path>/`. Files already present
-in the tracked workflow are skipped. Enter `y` to confirm downloading; Enter or
-`n` cancels.
-
-Scan results and download metadata are saved in local `data/pdfs.json`. That file,
-new PDF downloads, generated documents, and virtual environments are excluded from Git.
-Existing inventory status fields are ignored; old history may remain for reference.
-An existing `data/inventory.json` is renamed without changing its contents. If both
-names exist, the command stops without overwriting either file.
-
-### Audit HTML accessibility scores
-
-With Node.js 22.19 or newer and Chrome/Chromium installed, install Lighthouse locally:
-
-```sh
-npm install --prefix .venv/lighthouse lighthouse@13.6.0
-dfx site audit
-dfx site scores
-```
-
-Audit crawls the most recently scanned website scope again, runs Lighthouse's
-accessibility checks on each unique HTML page, and saves scores out of 100 in
-`data/page_scores.json`. It does not change the PDF inventory or download PDFs.
-Both commands accept an optional scope URL. Audit accepts `--chrome` for a browser
-executable and `--max-urls` (default **9999**, including HTML and other visited URLs).
-It uses the same discovery scope and robots rules as PDF scanning, but disregards
-`.pdfignore`; those exclusions apply only to PDF discovery and downloads.
-Chrome loads page resources to perform Lighthouse checks. Scores reflect live pages;
-automated scores do not establish full accessibility conformance.
-
-Each result is saved as it finishes, including audit errors. A new audit replaces
-the previous run for that scope; other scopes remain saved. `dfx site scores` reads
-the saved results without network requests and displays a tree such as
-`├── (87) about.html`; failed audits appear as `(error)`.
-
-Scan and audit report whether discovered links were exhausted, the URL limit was
-reached, or URLs could not be processed. At the limit, an interactive terminal
-prompts for a higher total `--max-urls` to continue the current crawl; Enter stops.
-Noninteractive runs stop at the limit and print instructions. Unlinked pages and
-JavaScript-generated links may still be missed, even when discovery finishes.
-
-### List PDF folders without saving a scan
-
-```sh
-dfx site scan "https://example.edu/department/" --folders --max-urls 100
-```
-
-This lists only folders containing PDFs found during this scan, with a count for
-each folder. Each unique PDF URL counts once in its immediate folder, not in
-parent folders. It does not print individual PDF URLs or a status tree, save or
-change `data/pdfs.json`, or offer downloads. It works without an inventory file.
-The scan still follows links; limits, excluded folders, and inaccessible pages can
-make the listing incomplete. Run a normal scan later to save results for downloading.
-
-### Exclude website folders
-
-Create `.pdfignore` in the `dfx` project root. Replace these example URLs with
-full URLs of folders to skip:
+To exclude folders from PDF scans and downloads, put their full URLs in `.pdfignore`:
 
 ```text
-# Skip these folders and everything beneath them
 https://example.edu/department/archive/
 https://example.edu/department/old-reports/
 ```
 
-Blank lines and lines beginning with `#` are ignored. Each entry is a literal
-folder URL; wildcards, query strings, and fragments are not supported. A trailing
-slash is optional. `/archive/` excludes that folder and its descendants, but not
-`/archive-old/`. Rules apply to the specified scheme and host.
+Each entry excludes that folder and its descendants. Blank lines and `#` comments
+are allowed; wildcards are not supported.
 
-Exclusions apply to normal scans, folder summaries, downloads, and redirects.
-Previously saved records and downloaded files are kept; excluded records can
-still appear in `dfx site tree`, but are not offered for download. Excluding the
-scan root stops the scan with an error. If `.pdfignore` is absent, nothing is
-excluded beyond the existing scope and `robots.txt` rules.
+### Accessibility scores
 
-### Track review status
+With Node.js 22.19+ and Chrome/Chromium installed:
 
 ```sh
-dfx site tree
+npm install --prefix .venv/lighthouse lighthouse@13.6.0
+dfx site audit
+dfx site scores --below 70
 ```
 
-| Status | Determined by file presence |
-| --- | --- |
-| [1] Downloaded | PDF in `1_downloads/`, with no matching Markdown in later stages |
-| [2] Pending Review | Markdown in the matching `2_review/` document folder, but none in ready |
-| [3] Ready to Publish | `index.html`, `assets/main.css`, and both archived Markdown files in the matching `3_publish/` folder; legacy root-level Markdown remains recognized |
+Audit runs Lighthouse on HTML pages in the most recently scanned website scope.
+Both commands accept an optional scope URL. Omit `--below 70` to show all saved
+scores. Automated scores do not establish accessibility conformance.
 
-The highest stage present wins. A folder or receipt alone does not establish a
-stage. URLs discovered without local files appear unnumbered as “not downloaded.”
-There are no manual status commands. Custom output roots remain usable for conversion,
-but are outside automatic status tracking and `dfx stage`.
-
-## Prepare a reviewed document for publication
-
-Refresh and inspect the preview after your final Markdown edits, then run:
-
-```sh
-dfx stage "2_review/document/"
-```
-
-The command prompts for your name; the local date, time, and UTC offset are generated.
-For new conversions, it copies the reviewed files into the matching folder under
-`3_publish/` with this layout:
-
-```text
-document/
-├── index.html
-└── assets/
-    ├── main.css
-    ├── … figures …
-    └── _pdf2md/
-        ├── content.md
-        └── log.md
-```
-
-It verifies the copies before removing originals. HTML, CSS, and images remain
-unchanged. Relative links in the archived Markdown and log are adjusted for their
-new locations; their other content is preserved. Staging does not rebuild HTML
-or publish anything. `assets/_pdf2md/` is reserved for the archived source and log.
-The HTML is installed last so incomplete copies do not appear ready to publish.
-
-After success the original `review/` folder is deleted. Its `log.md`, including any
-notes added there, is preserved in `assets/_pdf2md/log.md`; review PNGs and other
-files in `review/` are removed. A two-line `ready_to_publish.txt` remains in the
-pending document folder:
-
-```text
-Reviewed by "NAME"; on "YYYY-MM-DD" at "HH:MM:SS UTC_OFFSET".
-file:///absolute/path/to/3_publish/document/
-```
-
-Missing required files, blank names, existing receipts, and destination conflicts stop
-the operation. Failures before installation leave originals intact. If installation,
-receipt creation, or cleanup is interrupted, the error names the affected location and
-what remains; do not overwrite an existing destination to retry. Completed ready copies
-are retained, and interrupted cleanup can leave duplicate pending files.
-
-Existing conversions are not automatically migrated. A document that still has
-`preview.html` and no `index.html` keeps its legacy layout when explicitly reviewed
-or staged: staging retains the previous root-level Markdown and `frompdf.html`
-behavior. Previously staged documents remain recognized by status tracking.
-
-Old `input/` and `output/` folders are not renamed automatically. Existing conversions
-may retain old review annotations and banners; the verification command does not strip
-them. Newly generated documents keep review guidance in `review/log.md` instead.
+Scan metadata is stored in `data/pdfs.json`; audit results are in
+`data/page_scores.json`. Local data, generated documents, downloads, and virtual
+environments are excluded from Git.
 
 ## Troubleshooting
 
+- **`dfx: command not found`:** activate `.venv` and run `python -m pip install -e .`.
 - **Missing Pandoc or browser:** check `pandoc --version` and supply `--chrome`
-  with the full executable path. Python requirements do not install these programs.
-- **`CERTIFICATE_VERIFY_FAILED` during scanning:** repair the certificate setup
-  for your Python installation. On macOS, python.org installers provide an
-  `Install Certificates.command` in that Python version's Applications folder.
-  On managed computers, ask your IT team about required certificate authorities.
-- **Existing output folder:** select a new output root for reconversion. Use
-  `dfx review` when you only want to render Markdown edits.
-- **Little or no extracted text:** this converter has no OCR stage. Obtain a
-  text-bearing PDF or transcribe/OCR the content separately before review.
+  with the browser executable path.
+- **Preview failed:** the converted Markdown remains available. Fix the reported
+  issue and run `dfx review` again.
+- **Certificate errors during scanning:** repair your Python certificate setup.
+  On macOS, python.org installations include `Install Certificates.command`.
 
-Run `dfx convert --help`, `dfx review --help`,
-`dfx site --help`, or `dfx stage --help` for command options.
+Run `dfx <command> --help` for options. More examples are in the
+[macOS/Linux](docs/commands_mac.md) and [Windows](docs/commands_win.md) command guides.

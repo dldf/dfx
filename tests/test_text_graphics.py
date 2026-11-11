@@ -44,6 +44,25 @@ class TextGraphicsTests(unittest.TestCase):
         self.assertNotIn('<mark>', markdown)
         self.assertEqual(images, [])
 
+    def test_partial_text_backgrounds_keep_text_for_each_fill_color(self):
+        for number, fill in enumerate(((1, 1, 1), (.95, .95, .95), (1, 1, 0)), 1):
+            page = self.page if number == 1 else self.document.new_page()
+            # A background behind only part of one extracted span, as in 2019MS.
+            page.draw_rect((145, 89, 350, 102), fill=fill, color=None)
+            page.insert_text((72, 100), f'Answer {number}: the vast majority of students are meeting our expectations.')
+        markdown, images = self.convert()
+        plain = markdown.replace('<mark>', '').replace('</mark>', '')
+        for number in range(1, 4):
+            self.assertEqual(plain.count(f'Answer {number}: the vast majority of students are meeting our expectations.'), 1)
+        self.assertEqual(images, [])
+        self.assertFalse((self.root / 'converted/assets').exists())
+
+    def test_text_only_pdf_does_not_create_assets_folder(self):
+        self.page.insert_text((72, 90), 'A document containing only text.')
+        markdown, _ = self.convert()
+        self.assertIn('A document containing only text.', markdown)
+        self.assertFalse((self.root / 'converted/assets').exists())
+
     def test_small_highlight_is_not_mistaken_for_checkbox(self):
         self.page.draw_rect((70, 78, 90, 94), fill=(1, 1, 0), color=None)
         self.page.insert_text((70, 90), 'TBD', fontsize=9)
@@ -66,7 +85,8 @@ class TextGraphicsTests(unittest.TestCase):
         self.page.insert_text((225, 94), 'No')
         self.page.insert_text((202, 92), 'X')
         markdown, images = self.convert()
-        self.assertIn('- [ ] Yes\n- [x] No', markdown)
+        self.assertIn('[ ] Yes\\\n[x] No', markdown)
+        self.assertNotIn('- [', markdown)
         self.assertNotIn('X Yes', markdown)
         self.assertEqual(images, [])
 
@@ -77,9 +97,58 @@ class TextGraphicsTests(unittest.TestCase):
         self.page.insert_text((221, 94), 'No')
         self.page.insert_text((202, 92), 'X')
         markdown, images = self.convert()
-        self.assertNotIn('- [x]', markdown)
+        self.assertNotIn('[x]', markdown)
         # pdfplumber may retain the box as a one-cell table instead of a PNG.
         self.assertTrue(images or '| X |' in markdown)
+
+    def test_label_backgrounds_do_not_turn_yes_no_into_tables(self):
+        for x, label, selected in ((108, 'Yes', False), (288, 'No', True)):
+            self.page.draw_rect((x, 80, x + 38.85, 100.45), fill=(1, 1, 1), color=None)
+            self.page.insert_text((x + 2, 94), label)
+            self.page.draw_rect((x + 39, 84.45, x + 55.5, 99.45))
+            if selected:
+                self.page.insert_text((x + 41, 96), 'X')
+        markdown, images = self.convert()
+        self.assertIn('[ ] Yes\\\n[x] No', markdown)
+        self.assertNotIn('<!-- table:', markdown)
+        self.assertEqual(images, [])
+
+    def test_vertical_series_keeps_arbitrary_labels_and_multiple_selections(self):
+        for y, label, selected in ((80, 'First option', True), (110, 'Second option', False),
+                                   (140, 'Third option', True)):
+            self.page.draw_rect((94, y, 190, y + 20.45), fill=(1, 1, 1), color=None)
+            self.page.insert_text((96, y + 14), label)
+            self.page.draw_rect((77.35, y + 4.45, 93.85, y + 19.45))
+            if selected:
+                self.page.insert_text((79.35, y + 16), 'X')
+        markdown, images = self.convert()
+        self.assertIn('[x] First option\\\n[ ] Second option\\\n[x] Third option', markdown)
+        self.assertNotIn('<!-- table:', markdown)
+        self.assertEqual(images, [])
+        soup = BeautifulSoup(render_body(markdown, self.root / 'converted', set()), 'html.parser')
+        self.assertEqual(len(soup.select('p br')), 2)
+        self.assertIsNone(soup.find('ul'))
+
+    def test_unchecked_series_does_not_invent_a_selection(self):
+        for x, label in ((70, 'Alpha'), (200, 'Beta')):
+            self.page.draw_rect((x, 80, x + 16, 96))
+            self.page.insert_text((x + 21, 94), label)
+        markdown, _ = self.convert()
+        self.assertIn('[ ] Alpha\\\n[ ] Beta', markdown)
+        self.assertNotIn('[x]', markdown)
+
+    def test_real_table_with_small_answer_cells_stays_a_table(self):
+        for row, values in enumerate((('Option', 'Selected'), ('Alpha', 'X'), ('Beta', ''))):
+            y = 70 + row * 18
+            for box, label in (((70, y, 160, y + 18), values[0]),
+                               ((160, y, 178, y + 18), values[1])):
+                self.page.draw_rect(box)
+                if label:
+                    self.page.insert_text((box[0] + 2, y + 12), label, fontsize=6)
+        markdown, _ = self.convert()
+        self.assertIn('<!-- table:', markdown)
+        self.assertIn('| Alpha | X |', markdown)
+        self.assertNotIn('[x]', markdown)
 
     def test_real_figure_keeps_image(self):
         self.page.draw_circle((200, 180), 35, color=(0, 0, 1))
@@ -89,12 +158,14 @@ class TextGraphicsTests(unittest.TestCase):
         self.assertEqual(len(images), 1)
 
     def test_later_opaque_rectangle_is_not_treated_as_background(self):
-        self.page.insert_text((80, 90), 'Covered text')
-        self.page.draw_rect((70, 70, 170, 100), fill=(1, 1, 0), color=None)
+        for number, fill in enumerate(((1, 1, 0), (1, 1, 1))):
+            page = self.page if number == 0 else self.document.new_page()
+            page.insert_text((80, 90), 'Covered text')
+            page.draw_rect((70, 70, 170, 100), fill=fill, color=None)
         markdown, images = self.convert()
         self.assertIn('Covered text', markdown)
         self.assertNotIn('<mark>', markdown)
-        self.assertEqual(len(images), 1)
+        self.assertEqual(len(images), 2)
 
     def test_highlight_splits_a_span_at_word_boundaries(self):
         start = 72 + pymupdf.get_text_length('Before ')

@@ -1,5 +1,5 @@
 """Exercise discovery and exclusion rules without contacting a website."""
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from email.message import Message
 import io
@@ -340,6 +340,52 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn('(100) about', text)
         self.assertIn('(error) contact.html', text)
         network.assert_not_called()
+
+    def test_scores_below_filters_pages_and_preserves_parent_folders(self):
+        site.save_json(site_audit.score_path(), {'version': 1, 'scans': {self.scope: {
+            'audited_at': 'saved timestamp', 'finished_at': 'saved timestamp', 'pages': {
+                self.scope + 'about/team.html?lang=en': {'score': 69},
+                self.scope + 'zero.html': {'score': 0},
+                self.scope + 'boundary.html': {'score': 70},
+                self.scope + 'hidden/perfect.html': {'score': 100},
+                self.scope + 'contact.html': {'score': None, 'error': 'Timed out'},
+            }}}})
+        original = site_audit.score_path().read_bytes()
+        with patch.object(site, 'build_opener') as network, redirect_stdout(io.StringIO()) as output:
+            site_audit.scores(self.scope, below=70)
+        text = output.getvalue()
+        self.assertIn('2 HTML pages below 70 (of 5 total)', text)
+        self.assertIn('├── about/\n│   └── (69) team.html?lang=en', text)
+        self.assertIn('└── (0) zero.html', text)
+        for excluded in ('boundary.html', 'hidden/', 'perfect.html', 'contact.html', 'Timed out'):
+            self.assertNotIn(excluded, text)
+        network.assert_not_called()
+        self.assertEqual(site_audit.score_path().read_bytes(), original)
+        for threshold, count in ((0, 0), (100, 3)):
+            with self.subTest(threshold=threshold), redirect_stdout(io.StringIO()) as output:
+                site_audit.scores(self.scope, below=threshold)
+                self.assertIn(f'{count} HTML pages below {threshold}', output.getvalue())
+                self.assertNotIn('(100)', output.getvalue())
+                if threshold == 0:
+                    self.assertNotIn('──', output.getvalue())
+
+    def test_scores_cli_below_validation_and_default(self):
+        data = {'scans': {self.scope: {'scanned_at': 'saved timestamp'}}}
+        for threshold in (None, 0, 70, 100):
+            argv = ['site.py', 'scores']
+            if threshold is not None:
+                argv.extend(['--below', str(threshold)])
+            with self.subTest(threshold=threshold), patch.object(site, 'load', return_value=data), patch.object(
+                    site_audit, 'scores') as scores, patch.object(sys, 'argv', argv):
+                site.main()
+                scores.assert_called_once_with(self.scope, below=threshold)
+        for threshold in ('-1', '101', '69.5', 'invalid'):
+            with self.subTest(threshold=threshold), patch.object(site_audit, 'scores') as scores, patch.object(
+                    sys, 'argv', ['site.py', 'scores', '--below', threshold]), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as stopped:
+                    site.main()
+                self.assertNotEqual(stopped.exception.code, 0)
+                scores.assert_not_called()
 
     def test_cli_defaults_and_latest_scope(self):
         latest = self.scope + 'latest/'

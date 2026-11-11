@@ -3,13 +3,12 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
 
 from bs4 import BeautifulSoup
 import pdfplumber
 import pymupdf
 
-from dfx.convert import convert_pdf, grid_or_html
+from dfx.convert import convert_pdf
 from dfx.review import document_title, ensure_document_heading, render_body
 
 
@@ -49,7 +48,7 @@ class FormLayoutTests(unittest.TestCase):
             self.assertIn('Student name: [---]{.blank}', markdown)
             self.assertIsNotNone(soup.select_one('hr.blank'))
             self.assertIsNone(soup.select_one('span.blank'))
-            self.assertIn('layout container treated as text', (output / 'review/log.md').read_text())
+            self.assertNotIn('Layout: Container converted to text', (output / 'review/log.md').read_text())
 
     def test_blank_threshold_and_standalone_blanks_preserve_text(self):
         with TemporaryDirectory() as temporary:
@@ -69,8 +68,8 @@ class FormLayoutTests(unittest.TestCase):
             self.assertIsNone(soup.select_one('span.blank, p hr'))
             self.assertIsNone(soup.find('tag'))
 
-    def test_blanks_survive_pipe_grid_and_html_tables(self):
-        for form in ('pipe', 'grid', 'HTML'):
+    def test_blanks_survive_pipe_tables_and_split_body_sections(self):
+        for form in ('pipe', 'split'):
             with self.subTest(form=form), TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 source, output = root / 'table.pdf', root / 'output'
@@ -89,17 +88,16 @@ class FormLayoutTests(unittest.TestCase):
                     page.insert_text((60, 155), 'Date: ________')
                     page.insert_text((235, 155), 'Keep: ___')
                     document.save(source)
-                renderer = (lambda html: (html, 'HTML')) if form == 'HTML' else grid_or_html
-                with patch('dfx.convert.grid_or_html', side_effect=renderer):
-                    convert_pdf(source, output)
+                convert_pdf(source, output)
                 markdown = (output / 'content.md').read_text()
                 soup = BeautifulSoup(render_body(markdown, output, set()), 'html.parser')
                 self.assertEqual(len(soup.select('table hr.blank')), 2)
                 self.assertIsNone(soup.select_one('span.blank, p hr'))
-                self.assertIn('Name:', soup.table.get_text())
-                self.assertIn('Keep: ___', soup.table.get_text())
-                if form != 'pipe':
-                    self.assertIsNotNone(soup.table.find(attrs={'colspan': '2'}))
+                self.assertIn('Name:', soup.get_text())
+                self.assertIn('Keep: ___', soup.get_text())
+                self.assertNotIn('<table', markdown)
+                self.assertIsNone(soup.find(attrs={'colspan': True}))
+                self.assertEqual(len(soup.select('table')), 1 if form == 'pipe' else 2)
 
     def test_rules_preserve_list_items_and_split_formatting(self):
         markdown = ('1. **Name: [---]{.blank} Date: [---]{.blank} End.**\n'
@@ -139,7 +137,7 @@ class FormLayoutTests(unittest.TestCase):
                 soup = BeautifulSoup(render_body((output / 'content.md').read_text(), output, set()), 'html.parser')
                 self.assertIsNotNone(soup.find('table'))
                 self.assertIn('Cell 1 1', soup.get_text())
-                self.assertNotIn('layout container treated as text', (output / 'review/log.md').read_text())
+                self.assertNotIn('Layout: Container converted to text', (output / 'review/log.md').read_text())
 
 
 class DocumentHeadingTests(unittest.TestCase):

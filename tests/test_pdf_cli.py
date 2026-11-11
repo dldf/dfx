@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PdfCommandTests(unittest.TestCase):
     def test_help_and_errors_match_existing_scripts(self):
-        for command in ('convert', 'review', 'stage', 'diagnose', 'site'):
+        for command in ('convert', 'rebuild', 'review', 'stage', 'diagnose', 'site'):
             for arguments in (['--help'], [], ['--unknown-option']):
                 with self.subTest(command=command, arguments=arguments):
                     old = subprocess.run(
@@ -39,6 +39,7 @@ class PdfCommandTests(unittest.TestCase):
                     capture_output=True, text=True)
                 self.assertEqual(result.returncode, code)
                 self.assertIn('convert', result.stdout + result.stderr)
+                self.assertIn('rebuild', result.stdout + result.stderr)
                 self.assertIn('stage', result.stdout + result.stderr)
                 self.assertIn('review', result.stdout + result.stderr)
                 self.assertIn('diagnose', result.stdout + result.stderr)
@@ -59,7 +60,7 @@ class PdfCommandTests(unittest.TestCase):
                 'print("script error", file=sys.stderr)\n'
                 'sys.exit(7)\n')
             arguments = ['folder/A $report `draft`.pdf', 'output folder', '--page-mode', '1=svg']
-            for command in ('convert', 'review', 'stage', 'diagnose', 'site'):
+            for command in ('convert', 'rebuild', 'review', 'stage', 'diagnose', 'site'):
                 with self.subTest(command=command):
                     (scripts / f'{command}.py').write_text(script)
                     result = subprocess.run(

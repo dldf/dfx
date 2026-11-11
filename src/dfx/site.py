@@ -443,10 +443,14 @@ def main():
         if name == 'audit':
             command.add_argument('--max-urls', type=int, default=9999, help='Maximum visited URLs (default 9999)')
             command.add_argument('--chrome', help='Chrome or Chromium executable path')
+        if name == 'scores':
+            command.add_argument('--below', type=int, help='Show only scores strictly below this integer threshold (0–100)')
     args = parser.parse_args()
     try:
         if args.command in ('scan', 'audit') and args.max_urls < 1:
             raise ValueError('--max-urls must be positive.')
+        if args.command == 'scores' and args.below is not None and not 0 <= args.below <= 100:
+            raise ValueError('--below must be an integer from 0 to 100.')
         if args.command == 'scan' and args.folders:
             scan({}, scope_url(args.url), args.max_urls, folders=True, interactive=sys.stdin.isatty())
             return
@@ -460,7 +464,7 @@ def main():
             if args.command == 'audit':
                 site_audit.audit(scope, args.max_urls, chrome=args.chrome, interactive=sys.stdin.isatty())
             else:
-                site_audit.scores(scope)
+                site_audit.scores(scope, below=args.below)
             return
         if args.command == 'scan':
             scan(data, scope, args.max_urls, interactive=sys.stdin.isatty())

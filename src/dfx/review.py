@@ -243,6 +243,17 @@ def render_body(markdown, folder, description_ids, continuation_indent=0):
     if 'Could not convert TeX math' in result.stderr:
         raise ValueError('Pandoc could not render the Markdown cleanly: ' + result.stderr.strip())
     soup = BeautifulSoup(result.stdout, 'html.parser')
+    # Page-number markers are a dfx extension: Pandoc leaves each pair as a
+    # plain paragraph. Keep code, table cells, and quoted examples untouched.
+    for paragraph in soup.find_all('p'):
+        if paragraph.find(True) or paragraph.find_parent(['blockquote', 'li', 'td', 'th']):
+            continue
+        match = re.fullmatch(r'([0-9]{1,4})\s+(:---:?|---:)', paragraph.get_text().strip())
+        if match and 1 <= int(match[1]) <= 1000:
+            alignment = {':---': 'left', ':---:': 'center', '---:': 'right'}[match[2]]
+            paragraph.string = match[1]
+            paragraph['style'] = f'text-align:{alignment}'
+            paragraph.insert_after(soup.new_tag('hr'))
     for heading in list(soup.select('h4.inline-heading')):
         if 'inline-heading-paragraph' in heading.parent.get('class', []):
             continue
@@ -351,7 +362,6 @@ def preview(pdf, markdown, chrome, inspect=False):
     css = document_css(source)
     review = markdown.parent / 'review'
     inspection = markdown.parent / html_name(markdown.parent)
-    external_css = inspection.name == 'index.html'
     title = document_title(markdown.parent.name)
     comparison = Path(records['pdf']['path']) if latex and 'pdf' in records else None
     document_context = (pymupdf.open(comparison or pdf) if not latex or comparison else nullcontext(None))
@@ -359,7 +369,6 @@ def preview(pdf, markdown, chrome, inspect=False):
         if not latex and [int(n) for n in parts[1::2]] != list(range(1, len(document) + 1)):
             raise ValueError('Keep one <!-- Source page N --> marker per PDF page, in order.')
         work = Path(tmp)
-        (work / 'main.css').write_text(css, encoding='utf-8')
         description_ids = set()
         page_bodies = ([render_body(source, markdown.parent, description_ids)] if latex else
                       [render_body(parts[2 * number], markdown.parent, description_ids,
@@ -388,7 +397,7 @@ def preview(pdf, markdown, chrome, inspect=False):
             html = work / f'p{number:03d}.html'
             html.write_text(f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: data:; style-src file: 'unsafe-inline'; script-src 'nonce-preview-measure'">
-<title>{label} — revised</title><link rel="stylesheet" href="main.css"></head>
+<title>{label} — revised</title><style>{css}</style></head>
 <body style="width: {width}px"><main style="min-height: {height}px">{body}</main>
 <script nonce="preview-measure">window.addEventListener('load', () => {{
  document.documentElement.dataset.previewHeight = Math.ceil(document.querySelector('main').getBoundingClientRect().height);
@@ -425,17 +434,13 @@ def preview(pdf, markdown, chrome, inspect=False):
         review.mkdir(exist_ok=True)
         for png in work.glob('*.png'):
             shutil.copyfile(png, review / png.name)
-        if external_css:
-            (markdown.parent / 'assets').mkdir(exist_ok=True)
-            shutil.copyfile(work / 'main.css', markdown.parent / 'assets/main.css')
-        stylesheet = '<link rel="stylesheet" href="assets/main.css">' if external_css else f'<style>{css}</style>'
         content = BeautifulSoup(''.join(bodies), 'html.parser')
         for img in content.find_all('img'):
             asset = Path(unquote(urlsplit(img['src']).path))
             img['src'] = quote(asset.relative_to(markdown.parent).as_posix(), safe='/')
         inspection.write_text('<!doctype html><html lang="en"><head><meta charset="utf-8">'
                               '<meta name="viewport" content="width=device-width, initial-scale=1">'
-                              f'<title>{escape(title)}</title>{stylesheet}</head>'
+                              f'<title>{escape(title)}</title><style>{css}</style></head>'
                               '<body><main>'
                               + str(content) + '</main></body></html>', encoding='utf-8')
         if inspect:

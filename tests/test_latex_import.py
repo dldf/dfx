@@ -18,7 +18,7 @@ class LatexImportTests(unittest.TestCase):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        self.tex = self.root / '1_downloads/latex/sample.tex'
+        self.tex = self.root / '1_download/latex/sample.tex'
         self.tex.parent.mkdir(parents=True)
         self.destination = self.root / '2_review/latex/sample'
         self.markdown = self.destination / 'content.md'
@@ -47,6 +47,7 @@ class LatexImportTests(unittest.TestCase):
         self.assertIsNotNone(soup.select_one('math[display="block"] msup'))
         self.assertIsNotNone(soup.select_one('math msub'))
         self.assertEqual(review.resolve_source(self.markdown, self.root), self.tex)
+        self.assertFalse((self.destination / 'assets').exists())
 
     def test_companion_pdf_has_separate_identity_and_may_have_multiple_pages(self):
         self.write_tex('One continuous document.')

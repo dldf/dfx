@@ -23,7 +23,7 @@ class DiagnoseTests(unittest.TestCase):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        self.pdf = self.root / '1_downloads/reports/sample.pdf'
+        self.pdf = self.root / '1_download/reports/sample.pdf'
         self.pdf.parent.mkdir(parents=True)
         self.destination = self.root / '2_review/reports/sample'
         with pymupdf.open() as doc:
@@ -43,13 +43,15 @@ class DiagnoseTests(unittest.TestCase):
         self.assertFalse(diagnostic_only(self.destination))
         with self.assertRaises(FileExistsError):
             convert_pdf(self.pdf, self.destination)
-        (self.destination / 'assets/main.css').write_text('body { color: black; }')
+        self.assertFalse((self.destination / 'assets').exists())
         (self.destination / 'index.html').write_text(
-            '<html><head><link rel="stylesheet" href="assets/main.css"></head><body>Text</body></html>')
+            '<html><head><style>body { color: black; }</style></head><body>Text</body></html>')
         ready = verify_document(self.destination, reviewer='Test Reviewer', root=self.root)
-        self.assertFalse((self.destination / 'review').exists())
+        self.assertTrue((self.destination / 'content.md').is_file())
+        self.assertTrue((self.destination / 'review/log.md').is_file())
+        self.assertEqual(report.read_bytes(), evidence)
         self.assertFalse(list(ready.rglob('diagnostic.md')))
-        self.assertTrue((ready / 'assets/_pdf2md/log.md').is_file())
+        self.assertFalse((ready / 'assets').exists())
         self.assertEqual(self.pdf.read_bytes(), original)
 
     def test_rerun_updates_only_diagnostic(self):
